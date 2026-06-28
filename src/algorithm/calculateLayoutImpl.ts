@@ -37,17 +37,17 @@ function paddingBorderOnAxis(node: Node, axisMain: boolean, availableAxis: numbe
   const endKey = axisMain ? PhysicalEdge.Right : PhysicalEdge.Bottom;
   let total = 0;
   if (node._hasPadding) {
-    total += resolveValue(node.style.padding[startKey]!, availableAxis);
-    total += resolveValue(node.style.padding[endKey]!, availableAxis);
+    total += safeResolve(node.style.padding[startKey]!, availableAxis);
+    total += safeResolve(node.style.padding[endKey]!, availableAxis);
   }
   // Border: TUI subset doesn't model a separate border enum, but the
   // Style has a border array — we honor it for completeness. TUI users
   // who want a "border" can put a 1-wide box outside.
   if (node._hasBorder) {
-    total += resolveValue(node.style.border[startKey]!, availableAxis);
-    total += resolveValue(node.style.border[endKey]!, availableAxis);
+    total += safeResolve(node.style.border[startKey]!, availableAxis);
+    total += safeResolve(node.style.border[endKey]!, availableAxis);
   }
-  return Number.isFinite(total) ? total : 0;
+  return total;
 }
 
 /**
@@ -61,12 +61,28 @@ function paddingBorderStart(node: Node, axisMain: boolean, availableAxis: number
   const startKey = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
   let total = 0;
   if (node._hasPadding) {
-    total += resolveValue(node.style.padding[startKey]!, availableAxis);
+    total += safeResolve(node.style.padding[startKey]!, availableAxis);
   }
   if (node._hasBorder) {
-    total += resolveValue(node.style.border[startKey]!, availableAxis);
+    total += safeResolve(node.style.border[startKey]!, availableAxis);
   }
-  return Number.isFinite(total) ? total : 0;
+  return total;
+}
+
+/**
+ * Resolve a Value to a pixel count, treating Undefined / Auto as 0
+ * (instead of NaN). NaN would poison the running `total +=` accumulator
+ * and zero out the rest of the call.
+ *
+ * Bug history: a row container with `paddingX: 1` has only padding[Left]
+ * and padding[Right] set; padding[Top] / padding[Bottom] stay Undefined.
+ * The old `resolveValue()` returns NaN for those, which then propagated
+ * through `total +=` and discarded the border contribution on the same
+ * edge — leaving the child placed with neither padding nor border offset.
+ */
+function safeResolve(v: Value, axisSize: number): number {
+  const r = resolveValue(v, axisSize);
+  return Number.isFinite(r) ? r : 0;
 }
 
 // ─── Margin helpers ────────────────────────────────────────────────────────
@@ -403,6 +419,22 @@ export function calculateLayoutImpl(
     const cross = childCrossSizes[i]!;
     if (Number.isFinite(cross)) lineCrossSize = Math.max(lineCrossSize, cross);
   }
+  // Line main size = sum of children's main-axis bases (and gaps).
+  // Used by STEP 9 when the parent gave us an undefined main size — the
+  // container's own main size should then be "as tall (or wide) as the
+  // children stacked along the main axis", not "as wide as the children's
+  // cross size". Bug history: column containers with no explicit height
+  // collapsed to the children's max width instead of summing their
+  // heights, hiding nested content.
+  let lineMainSize = 0;
+  for (let i = 0; i < visibleChildren.length; i++) {
+    const child = visibleChildren[i]!;
+    const basis = child._layoutResults.computedFlexBasis;
+    if (Number.isFinite(basis)) {
+      lineMainSize += basis;
+      if (i < gaps.length) lineMainSize += gaps[i]!;
+    }
+  }
 
   // Container's effective cross size for alignment purposes:
   // - If availableInnerCross is finite, use it (the container IS that size
@@ -535,8 +567,13 @@ export function calculateLayoutImpl(
     const mainOffset = mainCursor + mMainLead;
     const paddingMainStart = paddingBorderStart(node, axisMain, availableMain);
     const paddingCrossStart = paddingBorderStart(node, !axisMain, availableCross);
-    const childAbsX = parentOffsetX + paddingCrossStart + (axisMain ? mainOffset : crossOffset);
-    const childAbsY = parentOffsetY + paddingMainStart + (axisMain ? crossOffset : mainOffset);
+    // The X-axis position uses the X-axis start inset (main when row,
+    // cross when column). The Y-axis position uses the Y-axis start
+    // inset (cross when row, main when column). Both axes add the
+    // axis-specific offset (mainOffset is the X-axis offset when
+    // flexDirection is row, crossOffset is the Y-axis offset).
+    const childAbsX = parentOffsetX + (axisMain ? paddingMainStart : paddingCrossStart) + (axisMain ? mainOffset : crossOffset);
+    const childAbsY = parentOffsetY + (axisMain ? paddingCrossStart : paddingMainStart) + (axisMain ? crossOffset : mainOffset);
     child._layoutResults.position[0] = childAbsX;
     child._layoutResults.position[1] = childAbsY;
 
@@ -593,9 +630,21 @@ export function calculateLayoutImpl(
   // For !axisMain (Column): main=Y (height), cross=X (width).
   const paddingCross = paddingBorderOnAxis(node, !axisMain, effectiveLineCross);
   const paddingMain = paddingBorderOnAxis(node, axisMain, availableInnerMain);
-  const ownMainBound = Number.isFinite(availableInnerMain)
+  // When the parent gave us a positive main size, the container is
+  // exactly that size (with padding added back). When the parent gave
+  // us 0 or undefined, the container shrinks to fit its content along
+  // the main axis — use lineMainSize (sum of children's main bases +
+  // gaps), not lineCrossSize.
+  //
+  // Bug history: column parents with explicit height were happy
+  // (availableInnerMain was positive), but flex containers with no
+  // explicit height handed their children 0, which then recursed with
+  // 0 height and hid their descendants. The previous code used
+  // `Number.isFinite(availableInnerMain) ? availableInnerMain : ...`
+  // which accepted 0 as "finite" and left content containers empty.
+  const ownMainBound = availableInnerMain > 0
     ? availableInnerMain + paddingMain
-    : effectiveLineCross + paddingCross; // fallback when undefined
+    : lineMainSize + paddingMain;
   const ownCrossBound = effectiveLineCross + paddingCross;
 
   let ownW: number;
