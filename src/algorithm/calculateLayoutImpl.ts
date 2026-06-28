@@ -49,6 +49,25 @@ function paddingBorderOnAxis(node: Node, axisMain: boolean, availableAxis: numbe
   return Number.isFinite(total) ? total : 0;
 }
 
+/**
+ * Start-edge padding+border for one axis (the inset from the parent's
+ * edge to the content origin). Children inside the padded parent
+ * are placed at `parent_origin + startInset` for their main/cross
+ * axis start edge.
+ */
+function paddingBorderStart(node: Node, axisMain: boolean, availableAxis: number): number {
+  if (!node._hasPadding && !node._hasBorder) return 0;
+  const startKey = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
+  let total = 0;
+  if (node._hasPadding) {
+    total += resolveValue(node.style.padding[startKey]!, availableAxis);
+  }
+  if (node._hasBorder) {
+    total += resolveValue(node.style.border[startKey]!, availableAxis);
+  }
+  return Number.isFinite(total) ? total : 0;
+}
+
 // ─── STEP 3: compute flex basis for a single child ────────────────────────
 
 /**
@@ -213,6 +232,19 @@ function computeChildCrossSize(
 
 // ─── Main entry ───────────────────────────────────────────────────────────
 
+/**
+ * Recursive layout entry.
+ *
+ * `parentOffsetX` / `parentOffsetY` are the absolute coords of this
+ * node's top-left, as placed by its parent. They default to (0, 0)
+ * for the root call from `calculateLayout()`. Children inherit
+ * their own absolute coords by adding their (main-offset, cross-offset)
+ * to the parent's position — see the main loop below.
+ *
+ * These params also serve as the per-call reset of `_layoutResults.position`:
+ * the parent sets the child's coords BEFORE recursing, so a stale value
+ * from the previous call can never survive into the next one.
+ */
 export function calculateLayoutImpl(
   node: Node,
   availableWidth: number,
@@ -221,6 +253,8 @@ export function calculateLayoutImpl(
   _widthSizingMode: MeasureMode,
   _heightSizingMode: MeasureMode,
   generationCount: number,
+  parentOffsetX: number = 0,
+  parentOffsetY: number = 0,
 ): void {
   // ── Cache-key setup (used by measure-func leaves too) ────────────
   const results = node._layoutResults;
@@ -228,10 +262,12 @@ export function calculateLayoutImpl(
   results.configVersion = node.config.version;
   results.lastOwnerDirection = ownerDirection;
 
-  // ── Layout-pass cache check (single-slot, lazy) ───────────────────
-  // Skip for simplicity: full Yoga has a sophisticated 8-slot measure
-  // cache. For TUI trees (small), invalidation by generation counter
-  // on every public call is sufficient.
+  // Set this node's absolute position from the parent-supplied offset.
+  // The recursive layout-pass cache check (single-slot, lazy) is skipped
+  // for simplicity — full Yoga has an 8-slot measure cache, but for
+  // TUI trees (small), the generation counter handles invalidation.
+  results.position[0] = parentOffsetX;
+  results.position[1] = parentOffsetY;
 
   // ── Resolve effective flex direction (RTL is identity for TUI) ──
   const effectiveFd = resolveDirection(node.style.flexDirection, ownerDirection);
@@ -272,74 +308,26 @@ export function calculateLayoutImpl(
   }
   resolveFlexibleLengths(visibleChildren, availableInnerMain, gaps);
 
-  // ── STEP 6: determine each child's cross size + STEP 11 entry ────
-  // For each child, we know its main-axis size (from computedFlexBasis).
-  // Cross-axis size: use child's own width/height if set, else pass
-  // availableInnerCross and let recursion handle it.
-  for (const child of visibleChildren) {
-    const childMainSize = child._layoutResults.computedFlexBasis;
-
-    // Measure-func leaf: ask it for its intrinsic size in one call.
-    // We pass the cross-axis available size so the leaf can choose to
-    // fill it (e.g., a text node that wraps).
-    if (child.measureFunc) {
-      const crossAxisAvailable = availableInnerCross;
-      const w = axisMain ? childMainSize : crossAxisAvailable;
-      const h = axisMain ? crossAxisAvailable : childMainSize;
-      const wMode = axisMain ? MeasureMode.Exactly : MeasureMode.AtMost;
-      const hMode = axisMain ? MeasureMode.AtMost : MeasureMode.Exactly;
-      const result = child.measureFunc(w, wMode, h, hMode);
-      // Use the leaf's measured size (it's the source of truth for text).
-      child._layoutResults.measuredDimensions = [result.width, result.height];
-      // Override the main-axis basis too in case measureFunc returned a different value.
-      if (axisMain) {
-        child._layoutResults.computedFlexBasis = result.width;
-      } else {
-        child._layoutResults.computedFlexBasis = result.height;
-      }
-      // Set the public layout view (normally done by the recursion,
-      // which we skip for measure-func leaves).
-      child.layout.left = 0;
-      child.layout.top = 0;
-      child.layout.width = result.width;
-      child.layout.height = result.height;
-      child.layout.right = result.width;
-      child.layout.bottom = result.height;
-      child._layoutResults.position[2] = result.width;
-      child._layoutResults.position[3] = result.height;
-      child._hasNewLayout = true;
-      child._isDirty = false;
-      continue;
-    }
-
+  // ── STEP 6a: compute each child's cross-axis size ────────────────
+  // Cross-axis size: use child's own width/height if set, else fall
+  // back to availableInnerCross so the child stretches if the container
+  // decides to stretch. Measure-func leaves compute their own size
+  // later in STEP 6c when we recurse.
+  const childCrossSizes: number[] = new Array(visibleChildren.length);
+  for (let i = 0; i < visibleChildren.length; i++) {
+    const child = visibleChildren[i]!;
     let childCrossSize = computeChildCrossSize(child, availableInnerCross, axisMain);
     if (Number.isNaN(childCrossSize)) {
-      // No fixed cross, no measure func. Fall back to availableInnerCross
-      // so the child stretches if the container decides to stretch.
       childCrossSize = availableInnerCross;
     }
-
-    const childWidth = axisMain ? childMainSize : childCrossSize;
-    const childHeight = axisMain ? childCrossSize : childMainSize;
-    calculateLayoutImpl(
-      child,
-      childWidth,
-      childHeight,
-      ownerDirection,
-      MeasureMode.Exactly,
-      MeasureMode.Exactly,
-      generationCount,
-    );
+    childCrossSizes[i] = childCrossSize;
   }
 
-  // ── STEP 7: align children along cross axis ────────────────────
-  // Compute the line's cross size first (max of children).
+  // ── STEP 6b: compute line cross size (max of children's cross) ──
   let lineCrossSize = 0;
-  for (const child of visibleChildren) {
-    const childCross = axisMain
-      ? child._layoutResults.measuredDimensions[1]
-      : child._layoutResults.measuredDimensions[0];
-    lineCrossSize = Math.max(lineCrossSize, childCross);
+  for (let i = 0; i < visibleChildren.length; i++) {
+    const cross = childCrossSizes[i]!;
+    if (Number.isFinite(cross)) lineCrossSize = Math.max(lineCrossSize, cross);
   }
 
   // Container's effective cross size for alignment purposes:
@@ -350,7 +338,7 @@ export function calculateLayoutImpl(
   // Track effective line cross (after stretch / explicit container)
   const effectiveLineCross = containerCross;
 
-  // Compute main-axis offsets from justifyContent + gaps.
+  // ── Compute main-axis offsets from justifyContent + gaps ─────────
   const mainAxisSize = availableInnerMain;
   let mainCursor = 0;
   let freeSpace = 0;
@@ -383,30 +371,81 @@ export function calculateLayoutImpl(
       break;
   }
 
-  // Now position each child and align cross-axis.
+  // ── STEP 6c + 7 + 8: position each child, then recurse ───────────
+  // Position first (so the child has its correct absolute coords
+  // visible when its own grandchildren are processed) and THEN recurse.
+  // For measure-func leaves, no recursion — we ask the leaf for its
+  // intrinsic size and write position/size directly.
   for (let i = 0; i < visibleChildren.length; i++) {
     const child = visibleChildren[i]!;
-    // Apply cross-axis align (this sets child._layoutResults.position[1] or [0])
-    const childCross = axisMain
-      ? child._layoutResults.measuredDimensions[1]
-      : child._layoutResults.measuredDimensions[0];
+    const childMainSize = child._layoutResults.computedFlexBasis;
+    const childCrossSize = childCrossSizes[i]!;
 
-    alignChild(
+    // Compute cross-axis offset (relative to this node) for alignChild.
+    const crossOffset = alignChild(
       child,
       effectiveLineCross,
-      childCross,
+      Number.isFinite(childCrossSize) ? childCrossSize : 0,
       axisMain,
       node.style.alignItems,
       child.style.alignSelf,
     );
 
-    // Add main-axis offset
+    // Set the child's absolute position = parent's position + start-inset
+    // (for padding/border) + offsets.
+    // This is what makes `child._layoutResults.position[0/1]` absolute
+    // (and what getComputedLeft/Top read).
     const mainOffset = mainCursor;
-    if (axisMain) {
-      child._layoutResults.position[0] += mainOffset; // Left
-    } else {
-      child._layoutResults.position[1] += mainOffset; // Top
+    const paddingMainStart = paddingBorderStart(node, axisMain, availableMain);
+    const paddingCrossStart = paddingBorderStart(node, !axisMain, availableCross);
+    const childAbsX = parentOffsetX + paddingCrossStart + (axisMain ? mainOffset : crossOffset);
+    const childAbsY = parentOffsetY + paddingMainStart + (axisMain ? crossOffset : mainOffset);
+    child._layoutResults.position[0] = childAbsX;
+    child._layoutResults.position[1] = childAbsY;
+
+    // Measure-func leaf — ask for intrinsic size, no recursion.
+    if (child.measureFunc) {
+      const crossAxisAvailable = availableInnerCross;
+      const w = axisMain ? childMainSize : crossAxisAvailable;
+      const h = axisMain ? crossAxisAvailable : childMainSize;
+      const wMode = axisMain ? MeasureMode.Exactly : MeasureMode.AtMost;
+      const hMode = axisMain ? MeasureMode.AtMost : MeasureMode.Exactly;
+      const result = child.measureFunc(w, wMode, h, hMode);
+      child._layoutResults.measuredDimensions = [result.width, result.height];
+      if (axisMain) {
+        child._layoutResults.computedFlexBasis = result.width;
+      } else {
+        child._layoutResults.computedFlexBasis = result.height;
+      }
+      child.layout.left = childAbsX;
+      child.layout.top = childAbsY;
+      child.layout.width = result.width;
+      child.layout.height = result.height;
+      child.layout.right = childAbsX + result.width;
+      child.layout.bottom = childAbsY + result.height;
+      child._layoutResults.position[2] = childAbsX + result.width;
+      child._layoutResults.position[3] = childAbsY + result.height;
+      child._hasNewLayout = true;
+      child._isDirty = false;
+      mainCursor += child._layoutResults.computedFlexBasis;
+      if (i < gaps.length) mainCursor += gaps[i]!;
+      continue;
     }
+
+    const childWidth = axisMain ? childMainSize : childCrossSize;
+    const childHeight = axisMain ? childCrossSize : childMainSize;
+    calculateLayoutImpl(
+      child,
+      childWidth,
+      childHeight,
+      ownerDirection,
+      MeasureMode.Exactly,
+      MeasureMode.Exactly,
+      generationCount,
+      childAbsX,
+      childAbsY,
+    );
+
     mainCursor += child._layoutResults.computedFlexBasis;
     if (i < gaps.length) mainCursor += gaps[i]!;
   }

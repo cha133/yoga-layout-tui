@@ -1,0 +1,12 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`column of rows, each row splitting into icon / text / badge 1`] = `
+"CCDDDDDDDDDDDDDDDEEE
+CCDDDDDDDDDDDDDDDEEE
+DDEEEEEEEEEEEEEEEFFF
+DDEEEEEEEEEEEEEEEFFF
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░"
+`;

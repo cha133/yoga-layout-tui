@@ -1,0 +1,15 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`margin offsets the box; padding shows as the box char, content inside as child char 1`] = `
+"BBBBBB░░░░░░
+BCCCCB░░░░░░
+BCCCCB░░░░░░
+BBBBBB░░░░░░"
+`;
+
+exports[`padding ring visible around content; margin is a no-op (TUI subset) 1`] = `
+"BBBBBB░░░░░░
+BCCCCB░░░░░░
+BCCCCB░░░░░░
+BBBBBB░░░░░░"
+`;

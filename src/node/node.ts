@@ -420,16 +420,28 @@ export class Node {
   }
 
   getComputedLayout(): PublicLayout {
-    // Return a shallow snapshot so callers can't accidentally mutate
-    // the live layout buffer (the algorithm writes to `node.layout` in
-    // place). Matches upstream `yoga-layout` behavior.
+    // Read left/top from `_layoutResults.position` (the algorithm
+    // updates this for every node, including children, after applying
+    // main-axis offsets from justifyContent). `this.layout.left/top`
+    // is only meaningful for the root — recursive `calculateLayoutImpl`
+    // calls reset it to 0 for each sub-tree root.
+    //
+    // width/height live on `this.layout` because the algorithm writes
+    // them there for every node.
+    //
+    // right/bottom are derived: upstream Yoga treats them as computed
+    // values, not stored state.
+    const left = this._layoutResults.position[0];
+    const top = this._layoutResults.position[1];
+    const width = this.layout.width;
+    const height = this.layout.height;
     return {
-      left: this.layout.left,
-      top: this.layout.top,
-      right: this.layout.right,
-      bottom: this.layout.bottom,
-      width: this.layout.width,
-      height: this.layout.height,
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
     };
   }
 

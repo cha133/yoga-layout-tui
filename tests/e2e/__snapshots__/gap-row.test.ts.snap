@@ -1,0 +1,7 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`gap=2 in a Row leaves 2 empty cells between each child 1`] = `
+"BBBB░░CCCC░░DDDD░░░░
+BBBB░░CCCC░░DDDD░░░░
+BBBB░░CCCC░░DDDD░░░░"
+`;

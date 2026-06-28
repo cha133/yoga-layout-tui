@@ -1,0 +1,14 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`absolute child inside a non-root container places against container edges 1`] = `
+"BBBBBBBBBBBBBBBBBBBB
+BBBBBBBBBBBBBBBBBBBB
+BBBBBBBBBBBBBBBBBBBB
+BBBBBBBBBBBBBBBBCCCC
+BBBBBBBBBBBBBBBBCCCC
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░"
+`;
