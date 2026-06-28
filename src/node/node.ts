@@ -420,7 +420,17 @@ export class Node {
   }
 
   getComputedLayout(): PublicLayout {
-    return this.layout;
+    // Return a shallow snapshot so callers can't accidentally mutate
+    // the live layout buffer (the algorithm writes to `node.layout` in
+    // place). Matches upstream `yoga-layout` behavior.
+    return {
+      left: this.layout.left,
+      top: this.layout.top,
+      right: this.layout.right,
+      bottom: this.layout.bottom,
+      width: this.layout.width,
+      height: this.layout.height,
+    };
   }
 
   getHasNewLayout(): boolean {
