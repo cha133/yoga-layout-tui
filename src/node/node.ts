@@ -15,18 +15,20 @@
 
 import { calculateLayout as calculateLayoutAlgorithm } from '../algorithm/calculateLayout.js';
 import { Config } from '../config/config.js';
-import type {
-  Align,
-  Direction,
-  Display,
-  FlexDirection,
-  Justify,
-  MeasureMode,
-  Overflow,
+import {
+  type Align,
+  type Direction,
+  type Display,
+  Edge,
+  type FlexDirection,
+  Gutter,
+  type Justify,
+  type MeasureMode,
+  type Overflow,
   PhysicalEdge,
-  PositionType,
+  type PositionType,
 } from '../enums.js';
-import { type DimensionInput, parseDimensionInput } from '../value.js';
+import { type DimensionInput, parseDimensionInput, UNDEFINED_VALUE, type Value } from '../value.js';
 import { LayoutResults } from './layoutResults.js';
 import { createDefaultStyle, type Style } from './style.js';
 
@@ -51,8 +53,11 @@ export type MeasureFunction = (
   heightMode: MeasureMode,
 ) => { width: number; height: number };
 
-/** Edge index for setMargin / setPadding / setBorder / setPosition. */
-export type EdgeInput = PhysicalEdge;
+/** Edge index for setMargin / setPadding / setBorder / setPosition.
+ *  Re-exported so external code can use this package's `Edge` type
+ *  without importing from `../enums.js`. Matches upstream Yoga's
+ *  YGEdge type (9-element). */
+export type { Edge };
 
 // ─── Public class ─────────────────────────────────────────────────────────
 
@@ -212,35 +217,132 @@ export class Node {
     return this;
   }
 
-  // ─── Edge insets ─────────────────────────────────────────────────────
+  /**
+   * Combined flex shorthand. Matches upstream Yoga / claude-code:
+   *   - n > 0: grow = n, shrink = 1, basis = 0
+   *     ("this item should grow, don't shrink, start from 0")
+   *   - n < 0: grow = 0, shrink = -n, basis left as-is
+   *     ("this item should shrink to fit")
+   *   - n === 0 or NaN: reset grow + shrink to 0, basis = 0
+   *     ("no flex behavior")
+   *
+   * Note: the basis is set to 0 (or reset) — not preserved. The
+   * upstream convention is "setFlex is for declaring a flex
+   * amount from scratch, not tweaking it."
+   */
+  setFlex(n: number): this {
+    if (n > 0) {
+      this.style.flexGrow = n;
+      this.style.flexShrink = 1;
+      this.style.flexBasis = UNDEFINED_VALUE;
+    } else if (n < 0) {
+      this.style.flexGrow = 0;
+      this.style.flexShrink = -n;
+    } else {
+      this.style.flexGrow = 0;
+      this.style.flexShrink = 0;
+      this.style.flexBasis = UNDEFINED_VALUE;
+    }
+    this._isDirty = true;
+    return this;
+  }
 
-  setMargin(edge: EdgeInput, v: DimensionInput): this {
-    this.style.margin[edge] = parseDimensionInput(v);
+  // ─── Edge insets ─────────────────────────────────────────────────────
+  //
+  // Setters accept the full 9-element `Edge` enum (Left/Top/Right/
+  // Bottom + Start/End + Horizontal/Vertical/All). The convenience
+  // edges (Horizontal/Vertical/All) are expanded into the 4 physical
+  // edges before being stored, so the algorithm can keep reading
+  // `style.margin[PhysicalEdge.Left]` without any change.
+  //
+  // Start/End are written to their own slots (style.margin[4/5]) for
+  // wire compat with upstream Yoga — the algorithm never reads them
+  // (we're LTR-only), but the slot exists so `getMargin(Edge.Start)`
+  // returns the value that was set.
+
+  setMargin(edge: Edge, v: DimensionInput): this {
+    const parsed = parseDimensionInput(v);
+    this._writeEdge(this.style.margin, edge, parsed);
     this._hasMargin = true;
     this._hasAutoMargin = this._hasAutoMargin || v === 'auto';
     this._isDirty = true;
     return this;
   }
 
-  setPadding(edge: EdgeInput, v: DimensionInput): this {
-    this.style.padding[edge] = parseDimensionInput(v);
+  setPadding(edge: Edge, v: DimensionInput): this {
+    const parsed = parseDimensionInput(v);
+    this._writeEdge(this.style.padding, edge, parsed);
     this._hasPadding = true;
     this._isDirty = true;
     return this;
   }
 
-  setBorder(edge: EdgeInput, v: DimensionInput): this {
-    this.style.border[edge] = parseDimensionInput(v);
+  setBorder(edge: Edge, v: DimensionInput): this {
+    const parsed = parseDimensionInput(v);
+    this._writeEdge(this.style.border, edge, parsed);
     this._hasBorder = true;
     this._isDirty = true;
     return this;
   }
 
-  setPosition(edge: EdgeInput, v: DimensionInput): this {
-    this.style.position[edge] = parseDimensionInput(v);
+  setPosition(edge: Edge, v: DimensionInput): this {
+    const parsed = parseDimensionInput(v);
+    this._writeEdge(this.style.position, edge, parsed);
     this._hasPosition = true;
     this._isDirty = true;
     return this;
+  }
+
+  /**
+   * Write `value` to the target slot(s) of a 9-element edge array.
+   * Convenience edges (Horizontal/Vertical/All) expand to multiple
+   * physical slots; logical edges (Start/End) write to their own
+   * slots. Physical edges (Left/Top/Right/Bottom) just overwrite
+   * their slot directly.
+   */
+  private _writeEdge(arr: Value[], edge: Edge, value: Value): void {
+    switch (edge) {
+      case Edge.Left:
+        arr[PhysicalEdge.Left] = value;
+        return;
+      case Edge.Top:
+        arr[PhysicalEdge.Top] = value;
+        return;
+      case Edge.Right:
+        arr[PhysicalEdge.Right] = value;
+        return;
+      case Edge.Bottom:
+        arr[PhysicalEdge.Bottom] = value;
+        return;
+      case Edge.Start:
+        // LTR-only: Start aliases Left at the storage layer so the
+        // algorithm sees the value too. (Upstream RTL would project
+        // differently.)
+        arr[Edge.Start] = value;
+        arr[PhysicalEdge.Left] = value;
+        return;
+      case Edge.End:
+        arr[Edge.End] = value;
+        arr[PhysicalEdge.Right] = value;
+        return;
+      case Edge.Horizontal:
+        arr[Edge.Horizontal] = value;
+        arr[PhysicalEdge.Left] = value;
+        arr[PhysicalEdge.Right] = value;
+        return;
+      case Edge.Vertical:
+        arr[Edge.Vertical] = value;
+        arr[PhysicalEdge.Top] = value;
+        arr[PhysicalEdge.Bottom] = value;
+        return;
+      case Edge.All:
+        arr[Edge.All] = value;
+        arr[PhysicalEdge.Left] = value;
+        arr[PhysicalEdge.Right] = value;
+        arr[PhysicalEdge.Top] = value;
+        arr[PhysicalEdge.Bottom] = value;
+        return;
+    }
   }
 
   /** Convenience: set all four margin edges at once. */
@@ -289,6 +391,30 @@ export class Node {
   setGap(gap: DimensionInput, crossGap?: DimensionInput): this {
     this.style.gap[0] = parseDimensionInput(crossGap ?? gap);
     this.style.gap[1] = parseDimensionInput(gap);
+    this._isDirty = true;
+    return this;
+  }
+
+  /**
+   * Gap on a specific gutter — matches upstream Yoga's
+   * `YGNodeStyleSetGap(Gutter, value)` API. Index in `style.gap[]`:
+   *   - `Gutter.Column` (0) = cross-axis gap (= row-axis in `setGap`)
+   *   - `Gutter.Row` (1) = main-axis gap (= column-axis in `setGap`)
+   *   - `Gutter.All` (2) = both axes
+   *
+   * Added in v0.5 to support Ink drop-in (`<Box gap={1} />` style
+   * props that map to a specific gutter).
+   */
+  setGapByGutter(gutter: Gutter, value: DimensionInput): this {
+    const parsed = parseDimensionInput(value);
+    if (gutter === Gutter.Column) {
+      this.style.gap[0] = parsed;
+    } else if (gutter === Gutter.Row) {
+      this.style.gap[1] = parsed;
+    } else if (gutter === Gutter.All) {
+      this.style.gap[0] = parsed;
+      this.style.gap[1] = parsed;
+    }
     this._isDirty = true;
     return this;
   }
@@ -496,6 +622,72 @@ export class Node {
 
   getHasNewLayout(): boolean {
     return this._hasNewLayout;
+  }
+
+  // ─── Style getters (Bug #4.5) ─────────────────────────────────────────
+  // Each getter returns the raw value stored on `style`. Useful for
+  // debugging, serialization, YAML dump, and Ink reconciler drop-in
+  // compat. Mechanical — no computation, just `this.style.<field>`.
+
+  getMargin(edge: Edge): Value {
+    return this.style.margin[edge]!;
+  }
+  getPadding(edge: Edge): Value {
+    return this.style.padding[edge]!;
+  }
+  getBorder(edge: Edge): Value {
+    return this.style.border[edge]!;
+  }
+  getPosition(edge: Edge): Value {
+    return this.style.position[edge]!;
+  }
+  getFlexBasis(): Value {
+    return this.style.flexBasis;
+  }
+  getWidth(): Value {
+    return this.style.width;
+  }
+  getHeight(): Value {
+    return this.style.height;
+  }
+  getMinWidth(): Value {
+    return this.style.minWidth;
+  }
+  getMinHeight(): Value {
+    return this.style.minHeight;
+  }
+  getMaxWidth(): Value {
+    return this.style.maxWidth;
+  }
+  getMaxHeight(): Value {
+    return this.style.maxHeight;
+  }
+  getOverflow(): Overflow {
+    return this.style.overflow;
+  }
+  getFlexDirection(): FlexDirection {
+    return this.style.flexDirection;
+  }
+  getJustifyContent(): Justify {
+    return this.style.justifyContent;
+  }
+  getAlignItems(): Align {
+    return this.style.alignItems;
+  }
+  getAlignSelf(): Align {
+    return this.style.alignSelf;
+  }
+  getPositionType(): PositionType {
+    return this.style.positionType;
+  }
+  getDirection(): Direction {
+    return this.style.direction;
+  }
+  getFlexGrow(): number {
+    return this.style.flexGrow;
+  }
+  getFlexShrink(): number {
+    return this.style.flexShrink;
   }
 
   /**

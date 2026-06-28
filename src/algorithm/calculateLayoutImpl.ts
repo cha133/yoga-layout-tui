@@ -700,13 +700,26 @@ export function calculateLayoutImpl(
 
     const childWidth = axisMain ? childMainSize : childCrossSize;
     const childHeight = axisMain ? childCrossSize : childMainSize;
+    // Scroll child gets AtMost on the main axis so the v0.4 Scroll
+    // clamp (STEP 9 `isScroll` branch) actually fires inside the
+    // child's own layout pass. Without this, Scroll containers only
+    // got AtMost from the public `calculateLayoutImpl` root call,
+    // which never happens in real usage (public API always passes
+    // Exactly). Now a flex parent that gives its Scroll child an
+    // exactly-sized slot passes AtMost downstream, letting the child
+    // shrink its content to fit if it would otherwise overflow.
+    const childMainMode =
+      child.style.overflow === Overflow.Scroll ? MeasureMode.AtMost : MeasureMode.Exactly;
+    const childCrossMode = MeasureMode.Exactly;
+    const childWidthMode = axisMain ? childMainMode : childCrossMode;
+    const childHeightMode = axisMain ? childCrossMode : childMainMode;
     calculateLayoutImpl(
       child,
       childWidth,
       childHeight,
       ownerDirection,
-      MeasureMode.Exactly,
-      MeasureMode.Exactly,
+      childWidthMode,
+      childHeightMode,
       generationCount,
     );
 

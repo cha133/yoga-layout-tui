@@ -4,7 +4,9 @@ import {
   Align,
   Direction,
   Display,
+  Edge,
   FlexDirection,
+  Gutter,
   Justify,
   MeasureMode,
   Overflow,
@@ -171,6 +173,23 @@ describe('Node flex item setters', () => {
     n.setFlexBasis('auto');
     expect(n.style.flexBasis.unit).toBe(Unit.Auto);
   });
+
+  test('setFlex(n) shorthand (Bug #5.1)', () => {
+    // n > 0: grow = n, shrink = 1, basis = 0
+    const a = Node.create().setFlex(2);
+    expect(a.style.flexGrow).toBe(2);
+    expect(a.style.flexShrink).toBe(1);
+    expect(a.style.flexBasis.unit).toBe(Unit.Undefined);
+    // n < 0: grow = 0, shrink = -n
+    const b = Node.create().setFlex(-1);
+    expect(b.style.flexGrow).toBe(0);
+    expect(b.style.flexShrink).toBe(1);
+    // n === 0: reset
+    const c = Node.create().setFlex(2).setFlex(0);
+    expect(c.style.flexGrow).toBe(0);
+    expect(c.style.flexShrink).toBe(0);
+    expect(c.style.flexBasis.unit).toBe(Unit.Undefined);
+  });
 });
 
 // ─── Edge insets ──────────────────────────────────────────────────────────
@@ -218,6 +237,44 @@ describe('Node edge insets', () => {
     expect(rawValue(n.style.position[PhysicalEdge.Top]!)).toBe(5);
     expect(n._hasPosition).toBe(true);
   });
+
+  test('Edge.Horizontal expands to Left + Right (Bug #4.1)', () => {
+    // Ink `<Box paddingX={1} paddingY={2}>` reconciler translates
+    // paddingX → setPadding(Edge.Horizontal, 1), paddingY →
+    // setPadding(Edge.Vertical, 2). Without the convenience-edge
+    // expansion, padding would silently stay Undefined.
+    const n = Node.create().setPadding(Edge.Horizontal, 3);
+    expect(rawValue(n.style.padding[PhysicalEdge.Left]!)).toBe(3);
+    expect(rawValue(n.style.padding[PhysicalEdge.Right]!)).toBe(3);
+    // Vertical stays Undefined — Horizontal didn't touch it.
+    expect(isUndefinedValue(n.style.padding[PhysicalEdge.Top]!)).toBe(true);
+    expect(isUndefinedValue(n.style.padding[PhysicalEdge.Bottom]!)).toBe(true);
+  });
+
+  test('Edge.Vertical expands to Top + Bottom', () => {
+    const n = Node.create().setMargin(Edge.Vertical, 4);
+    expect(rawValue(n.style.margin[PhysicalEdge.Top]!)).toBe(4);
+    expect(rawValue(n.style.margin[PhysicalEdge.Bottom]!)).toBe(4);
+    expect(isUndefinedValue(n.style.margin[PhysicalEdge.Left]!)).toBe(true);
+    expect(isUndefinedValue(n.style.margin[PhysicalEdge.Right]!)).toBe(true);
+  });
+
+  test('Edge.All expands to all 4 physical edges', () => {
+    const n = Node.create().setBorder(Edge.All, 2);
+    expect(rawValue(n.style.border[PhysicalEdge.Left]!)).toBe(2);
+    expect(rawValue(n.style.border[PhysicalEdge.Right]!)).toBe(2);
+    expect(rawValue(n.style.border[PhysicalEdge.Top]!)).toBe(2);
+    expect(rawValue(n.style.border[PhysicalEdge.Bottom]!)).toBe(2);
+  });
+
+  test('Edge.Start / Edge.End alias Left / Right (LTR-only)', () => {
+    // LTR: Start = Left, End = Right. The algorithm reads the
+    // physical slots, so setPadding(Edge.Start, 5) makes paddingLeft
+    // = 5 just like setPadding(Edge.Left, 5) would.
+    const n = Node.create().setPadding(Edge.Start, 7).setPadding(Edge.End, 9);
+    expect(rawValue(n.style.padding[PhysicalEdge.Left]!)).toBe(7);
+    expect(rawValue(n.style.padding[PhysicalEdge.Right]!)).toBe(9);
+  });
 });
 
 // ─── Gap ──────────────────────────────────────────────────────────────────
@@ -234,6 +291,20 @@ describe('Node gap', () => {
     // Index 0 = column gap, Index 1 = row gap (matches Gutter enum ordering).
     expect(rawValue(n.style.gap[0]!)).toBe(3);
     expect(rawValue(n.style.gap[1]!)).toBe(2);
+  });
+
+  test('setGapByGutter (Bug #5.2)', () => {
+    // Matches upstream Yoga's YGNodeStyleSetGap(Gutter, value) API.
+    // gap[0] = column (cross-axis when flexDirection=Row), gap[1] = row.
+    const a = Node.create().setGapByGutter(Gutter.Column, 5);
+    expect(rawValue(a.style.gap[0]!)).toBe(5);
+    expect(rawValue(a.style.gap[1]!)).toBeNaN();
+    const b = Node.create().setGapByGutter(Gutter.Row, 7);
+    expect(rawValue(b.style.gap[0]!)).toBeNaN();
+    expect(rawValue(b.style.gap[1]!)).toBe(7);
+    const c = Node.create().setGapByGutter(Gutter.All, 3);
+    expect(rawValue(c.style.gap[0]!)).toBe(3);
+    expect(rawValue(c.style.gap[1]!)).toBe(3);
   });
 });
 
@@ -545,6 +616,44 @@ describe('Node.calculateLayout stub', () => {
     a.markLayoutSeen();
     expect(a.getHasNewLayout()).toBe(false);
     expect(root.getHasNewLayout()).toBe(true); // root unaffected
+  });
+
+  test('style getters (Bug #4.5)', () => {
+    // Mechanical getters that read directly from `style`. The set →
+    // get round-trip should be a no-op for any field that has a
+    // getter.
+    const n = Node.create()
+      .setWidth(80)
+      .setHeight(24)
+      .setFlexDirection(FlexDirection.Row)
+      .setJustifyContent(Justify.Center)
+      .setAlignItems(Align.Stretch)
+      .setAlignSelf(Align.Auto)
+      .setPositionType(PositionType.Relative)
+      .setOverflow(Overflow.Hidden)
+      .setFlexGrow(2)
+      .setFlexShrink(1)
+      .setFlexBasis(30)
+      .setMargin(PhysicalEdge.Left, 5)
+      .setPadding(PhysicalEdge.Right, 2)
+      .setBorder(PhysicalEdge.Top, 1)
+      .setPosition(PhysicalEdge.Left, 10);
+    expect(rawValue(n.getWidth())).toBe(80);
+    expect(rawValue(n.getHeight())).toBe(24);
+    expect(n.getFlexDirection()).toBe(FlexDirection.Row);
+    expect(n.getJustifyContent()).toBe(Justify.Center);
+    expect(n.getAlignItems()).toBe(Align.Stretch);
+    expect(n.getAlignSelf()).toBe(Align.Auto);
+    expect(n.getPositionType()).toBe(PositionType.Relative);
+    expect(n.getOverflow()).toBe(Overflow.Hidden);
+    expect(n.getFlexGrow()).toBe(2);
+    expect(n.getFlexShrink()).toBe(1);
+    expect(rawValue(n.getFlexBasis())).toBe(30);
+    expect(rawValue(n.getMargin(PhysicalEdge.Left))).toBe(5);
+    expect(rawValue(n.getPadding(PhysicalEdge.Right))).toBe(2);
+    expect(rawValue(n.getBorder(PhysicalEdge.Top))).toBe(1);
+    expect(rawValue(n.getPosition(PhysicalEdge.Left))).toBe(10);
+    expect(n.getDirection()).toBe(Direction.LTR);
   });
 
   test('display:none children are skipped', () => {

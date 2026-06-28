@@ -34,10 +34,12 @@ describe('createDefaultStyle', () => {
     expect(isUndefinedValue(s.flexBasis)).toBe(true);
   });
 
-  test('4-edge arrays start all-Undefined', () => {
+  test('9-edge arrays start all-Undefined (Bug #4.1)', () => {
+    // v0.5 expansion: 4-element edge arrays → 9-element (see Edge
+    // enum in src/enums.ts). All 9 slots default to Undefined.
     const s = createDefaultStyle();
     for (const arr of [s.margin, s.padding, s.border, s.position]) {
-      expect(arr).toHaveLength(4);
+      expect(arr).toHaveLength(9);
       for (const v of arr) {
         expect(isUndefinedValue(v)).toBe(true);
       }

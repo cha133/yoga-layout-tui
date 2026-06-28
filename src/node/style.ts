@@ -39,7 +39,12 @@ export interface Style {
   flexShrink: number;
   flexBasis: Value;
 
-  // 4-edge insets, indexed by PhysicalEdge (Left=0, Right=1, Top=2, Bottom=3).
+  // 9-edge insets, indexed by `Edge` enum (see src/enums.ts):
+  //   [Left, Top, Right, Bottom, Start, End, Horizontal, Vertical, All].
+  // Internal computations only read the 4 physical edges (0..3); the
+  // other 5 slots (Start/End/Horizontal/Vertical/All) are used as
+  // input-only "set this edge shorthand" values that the setter
+  // expands into the 4 physical edges (see Node.setMargin et al.).
   margin: Value[];
   padding: Value[];
   border: Value[];
@@ -72,7 +77,11 @@ export interface Style {
  *   - flexBasis: Undefined (CSS default; resolves to `auto` for items)
  */
 export function createDefaultStyle(): Style {
-  const fourZeros: Value[] = [UNDEFINED_VALUE, UNDEFINED_VALUE, UNDEFINED_VALUE, UNDEFINED_VALUE];
+  // 9-element edge arrays (Edge enum: Left, Top, Right, Bottom, Start,
+  // End, Horizontal, Vertical, All). All default to Undefined — the
+  // physical 4 are read by the algorithm, the 5 logical ones are
+  // input-only "set" targets.
+  const nineZeros: Value[] = Array.from({ length: 9 }, () => UNDEFINED_VALUE);
   const twoZeros: Value[] = [UNDEFINED_VALUE, UNDEFINED_VALUE];
 
   return {
@@ -89,10 +98,10 @@ export function createDefaultStyle(): Style {
     flexShrink: 0,
     flexBasis: UNDEFINED_VALUE,
 
-    margin: [...fourZeros],
-    padding: [...fourZeros],
-    border: [...fourZeros],
-    position: [...fourZeros],
+    margin: [...nineZeros],
+    padding: [...nineZeros],
+    border: [...nineZeros],
+    position: [...nineZeros],
 
     gap: [...twoZeros],
 

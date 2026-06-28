@@ -127,7 +127,26 @@ export const MeasureMode = {
 } as const;
 export type MeasureMode = (typeof MeasureMode)[keyof typeof MeasureMode];
 
-// ─── 4-edge physical model (TUI subset; no Start/End, no RTL mapping) ───────
+// ─── Edge model (9 elements, matches upstream YGEnums.h) ─────────────────
+//
+// 9-element edge array (indexed by `Edge` enum below):
+//   0 Left    — physical left edge
+//   1 Top     — physical top edge
+//   2 Right   — physical right edge
+//   3 Bottom  — physical bottom edge
+//   4 Start   — logical start (= Left in LTR, = Right in RTL)
+//   5 End     — logical end   (= Right in LTR, = Left in RTL)
+//   6 Horizontal — both L + R (set same value on both)
+//   7 Vertical   — both T + B
+//   8 All        — all 4 edges
+//
+// TUI subset note: Start/End are defined for wire compat with upstream
+// Yoga + Ink reconciler (which pass `Edge.Start` etc. into the
+// `YGNodeStyleSetPadding(YGEdge, value)` API), but the `resolveEdge`
+// fallback chain treats them as Left/Right in LTR mode. We never
+// project them via RTL — TUI is LTR-only per `.claude/01-state.md`.
+// Horizontal/Vertical/All are the actively-used convenience values;
+// they're the whole reason v0.5 exists (Ink `<Box paddingX paddingY>`).
 
 export const PhysicalEdge = {
   Left: 0,
@@ -136,6 +155,16 @@ export const PhysicalEdge = {
   Bottom: 3,
 } as const;
 export type PhysicalEdge = (typeof PhysicalEdge)[keyof typeof PhysicalEdge];
+
+export const Edge = {
+  ...PhysicalEdge,
+  Start: 4,
+  End: 5,
+  Horizontal: 6,
+  Vertical: 7,
+  All: 8,
+} as const;
+export type Edge = (typeof Edge)[keyof typeof Edge];
 
 // ─── Gap selector ───────────────────────────────────────────────────────────
 

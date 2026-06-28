@@ -472,6 +472,31 @@ describe('Overflow.Scroll clamping', () => {
     expect(root.getComputedHeight()).toBe(10);
     expect(a.getComputedHeight()).toBe(15); // child overflows viewport
   });
+
+  test('Scroll child inside flex parent: child gets AtMost and clamp fires (v0.5 fix)', () => {
+    // Bug #v0.4-known-limitation-1 fix: pre-v0.5, calculateLayoutImpl
+    // always passed `MeasureMode.Exactly, Exactly` to children, so the
+    // v0.4 Scroll clamp (`mainMode === AtMost` branch) was never
+    // reachable from real usage. After the fix, a flex parent that
+    // gives a Scroll child an exact slot passes AtMost downstream, so
+    // the child's own Scroll clamp fires and shrinks it to its slot.
+    const parent = Node.create().setWidth(20).setHeight(10).setFlexDirection(FlexDirection.Column);
+    const scrollChild = Node.create()
+      .setFlexDirection(FlexDirection.Column)
+      .setFlexGrow(1)
+      .setOverflow(Overflow.Scroll);
+    const a = Node.create().setWidth(20).setHeight(15);
+    const b = Node.create().setWidth(20).setHeight(15);
+    scrollChild.insertChild(a, 0);
+    scrollChild.insertChild(b, 1);
+    parent.insertChild(scrollChild, 0);
+    parent.calculateLayout(20, 10);
+    // Parent gives scrollChild a 20×10 slot (full height via flexGrow).
+    // Without AtMost, scrollChild would grow to fit 30 of content.
+    // With AtMost + Scroll clamp, scrollChild stays at 10 (the
+    // parent-given slot, since content > viewport).
+    expect(scrollChild.getComputedHeight()).toBe(10);
+  });
 });
 
 // ─── Bug #3.1 / #3.2: measure-func subtree recursion ─────────────────────
