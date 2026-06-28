@@ -1,6 +1,6 @@
 {
   "name": "yoga-layout-tui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure TypeScript port of Meta's Yoga flexbox engine — TUI-only subset",
   "license": "MIT",
   "author": "Chacha <cha133@users.noreply.github.com>",
