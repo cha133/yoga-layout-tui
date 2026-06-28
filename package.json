@@ -1,9 +1,23 @@
 {
-  "name": "yoga-layout-ts",
-  "module": "index.ts",
+  "name": "yoga-layout-tui",
+  "version": "0.0.1",
+  "description": "Pure TypeScript port of Meta's Yoga flexbox engine — TUI-only subset",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:e2e": "bun test tests/e2e",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests",
+    "format": "biome format --write src tests"
+  },
   "devDependencies": {
+    "@biomejs/biome": "^2",
     "@types/bun": "latest"
   },
   "peerDependencies": {
