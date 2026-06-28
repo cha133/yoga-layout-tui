@@ -347,19 +347,60 @@ describe('Node lifecycle', () => {
     expect(child._hasNewLayout).toBe(false);
   });
 
-  test('markDirty cascades to descendants but skips already-dirty ones', () => {
+  test('free() resets style and hot-path flags (bug #3.3)', () => {
+    // Bug #3.3 regression: free() used to leave `style` and the
+    // `_hasX` hot-path flags at their last-set values. After the fix,
+    // they're restored to a fresh default-style state, so a freed
+    // node is safe to reuse without leaking stale state.
+    const n = Node.create()
+      .setWidth(80)
+      .setHeight(20)
+      .setMargin(PhysicalEdge.Left, 5)
+      .setPadding(PhysicalEdge.Right, 2);
+    expect(n._hasMargin).toBe(true);
+    expect(n._hasPadding).toBe(true);
+    n.free();
+    expect(n._hasMargin).toBe(false);
+    expect(n._hasPadding).toBe(false);
+    expect(n._hasBorder).toBe(false);
+    expect(n._hasPosition).toBe(false);
+    expect(n._hasAutoMargin).toBe(false);
+    // style should now be the default — width/height Auto.
+    expect(n.style.width.unit).toBe(Unit.Auto);
+    expect(n.style.height.unit).toBe(Unit.Auto);
+  });
+
+  test('reset() also clears style and hot-path flags (bug #3.3)', () => {
+    const n = Node.create().setWidth(80).setHeight(20).setBorder(PhysicalEdge.Top, 3);
+    expect(n._hasBorder).toBe(true);
+    n.reset();
+    expect(n._hasBorder).toBe(false);
+    expect(n.style.width.unit).toBe(Unit.Auto);
+  });
+
+  test('markDirty on root does NOT cascade to descendants', () => {
+    // Bug #1.3 regression: markDirty used to propagate DOWN to
+    // children. After the fix, dirtying the root must NOT touch any
+    // descendants — children stay clean because the cache contract is
+    // "dirty child ⇒ re-layout subtree", and the root's cached layout
+    // is independent of its (still-clean) children's state.
+    //
+    // For insert/remove-style mutations that DO need down-propagation,
+    // use `_markDirtyRecursive` (private; called by insertChild etc.).
     const root = Node.create();
     const a = Node.create();
     const b = Node.create();
     root.insertChild(a, 0);
     a.insertChild(b, 0);
-    root._isDirty = false;
-    a._isDirty = false;
-    b._isDirty = false;
+    root.calculateLayout(10, 10);
+    expect(root._isDirty).toBe(false);
+    expect(a._isDirty).toBe(false);
+    expect(b._isDirty).toBe(false);
     root.markDirty();
     expect(root._isDirty).toBe(true);
-    expect(a._isDirty).toBe(true);
-    expect(b._isDirty).toBe(true);
+    // Descendants stay clean (no down-propagation from public markDirty).
+    expect(a._isDirty).toBe(false);
+    expect(b._isDirty).toBe(false);
   });
 });
 
@@ -393,8 +434,42 @@ describe('Node.calculateLayout stub', () => {
     expect(n.getComputedHeight()).toBe(24);
     expect(n.getComputedLeft()).toBe(0);
     expect(n.getComputedTop()).toBe(0);
-    expect(n.getComputedRight()).toBe(80);
-    expect(n.getComputedBottom()).toBe(24);
+    // Root has no parent — upstream Yoga semantic returns 0 for the
+    // "distance from parent's edge" inset on a root node.
+    expect(n.getComputedRight()).toBe(0);
+    expect(n.getComputedBottom()).toBe(0);
+    // The PublicLayout object still carries the right/bottom edge
+    // (= left + width), per Yoga C++ spec.
+    const layout = n.getComputedLayout();
+    expect(layout.right).toBe(80);
+    expect(layout.bottom).toBe(24);
+  });
+
+  test('getComputedRight/Bottom return parent-relative inset for children', () => {
+    // Bug #1.2 regression: getComputedRight used to return
+    // `position[2]` (= `ownW` = the right edge in parent coords) which
+    // doesn't match upstream Yoga's "distance from parent's right
+    // edge" semantic. After the fix, the inset for a child that
+    // starts at left=0 with width=20 in a parent of width=100 should
+    // be 100 - 0 - 20 = 80.
+    const root = Node.create().setWidth(100).setHeight(50);
+    const child = Node.create().setWidth(20).setHeight(10);
+    root.insertChild(child, 0);
+    root.calculateLayout(100, 50);
+    // Column default flexDirection: child sits at top=0, left=0.
+    expect(child.getComputedLeft()).toBe(0);
+    expect(child.getComputedTop()).toBe(0);
+    expect(child.getComputedWidth()).toBe(20);
+    expect(child.getComputedHeight()).toBe(10);
+    // Inset from right edge of parent = 100 - 0 - 20 = 80.
+    expect(child.getComputedRight()).toBe(80);
+    // Inset from bottom edge of parent = 50 - 0 - 10 = 40.
+    expect(child.getComputedBottom()).toBe(40);
+    // The PublicLayout object still carries the right/bottom edge
+    // (= left + width / top + height) per Yoga C++ spec.
+    const layout = child.getComputedLayout();
+    expect(layout.right).toBe(20);
+    expect(layout.bottom).toBe(10);
   });
 
   test('sets _hasNewLayout and clears _isDirty', () => {
@@ -422,6 +497,32 @@ describe('Node.calculateLayout stub', () => {
     expect(a.getComputedHeight()).toBe(50);
   });
 
+  test('markLayoutSeen resets _hasNewLayout to false', () => {
+    // Bug #3.2: before adding markLayoutSeen, _hasNewLayout was
+    // write-only-once-per-pass — the consumer had no way to clear
+    // it, so a React reconciler would treat every node as perpetually
+    // dirty. After the fix, markLayoutSeen resets the flag.
+    const n = Node.create();
+    n.calculateLayout(50, 20);
+    expect(n.getHasNewLayout()).toBe(true);
+    const ret = n.markLayoutSeen();
+    expect(ret).toBe(n); // returns this for chaining
+    expect(n.getHasNewLayout()).toBe(false);
+    expect(n._hasNewLayout).toBe(false);
+  });
+
+  test('markLayoutSeen on a child only clears that child (not the whole tree)', () => {
+    const root = Node.create();
+    const a = Node.create();
+    root.insertChild(a, 0);
+    root.calculateLayout(50, 20);
+    expect(root.getHasNewLayout()).toBe(true);
+    expect(a.getHasNewLayout()).toBe(true);
+    a.markLayoutSeen();
+    expect(a.getHasNewLayout()).toBe(false);
+    expect(root.getHasNewLayout()).toBe(true); // root unaffected
+  });
+
   test('display:none children are skipped', () => {
     const root = Node.create();
     const visible = Node.create();
@@ -439,6 +540,92 @@ describe('Node.calculateLayout stub', () => {
     const n = Node.create();
     n.calculateLayout(100, 50, Direction.RTL);
     expect(n.getComputedWidth()).toBe(100);
+  });
+});
+
+// ─── markDirty direction (bug #1.3) ──────────────────────────────────────
+
+describe('Node.markDirty direction', () => {
+  test('markDirty propagates UP, not down', () => {
+    // Bug #1.3 regression: markDirty used to propagate DOWN to
+    // children. After the fix, a single setWidth on a child should
+    // dirty the child AND every ancestor — and must NOT dirty
+    // unrelated siblings of the ancestor.
+    const root = Node.create().setWidth(100).setHeight(50);
+    const a = Node.create().setWidth(10).setHeight(10);
+    const b = Node.create().setWidth(10).setHeight(10);
+    const grandchild = Node.create().setWidth(5).setHeight(5);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    a.insertChild(grandchild, 0);
+
+    // Clear all dirty bits.
+    root.calculateLayout(100, 50);
+    expect(root._isDirty).toBe(false);
+    expect(a._isDirty).toBe(false);
+    expect(b._isDirty).toBe(false);
+    expect(grandchild._isDirty).toBe(false);
+
+    // Dirty a leaf (grandchild) — should propagate UP to parent (a)
+    // and grandparent (root), but NOT to b (unrelated sibling of a).
+    grandchild._isDirty = false;
+    grandchild.markDirty();
+    expect(grandchild._isDirty).toBe(true);
+    expect(a._isDirty).toBe(true);
+    expect(root._isDirty).toBe(true);
+    expect(b._isDirty).toBe(false);
+  });
+
+  test('markDirty on a deep node walks the full ancestor chain', () => {
+    const root = Node.create().setWidth(100);
+    const a = Node.create().setWidth(50);
+    const b = Node.create().setWidth(30);
+    const c = Node.create().setWidth(10);
+    root.insertChild(a, 0);
+    a.insertChild(b, 0);
+    b.insertChild(c, 0);
+
+    root.calculateLayout(100, 50);
+    c.markDirty();
+    expect(c._isDirty).toBe(true);
+    expect(b._isDirty).toBe(true);
+    expect(a._isDirty).toBe(true);
+    expect(root._isDirty).toBe(true);
+  });
+
+  test('markDirty on a leaf still walks up even when leaf was dirtied externally', () => {
+    // Invariant: "dirty node ⇒ all ancestors dirty." If some other
+    // code path dirtied the leaf without walking up (e.g., direct
+    // assignment `node._isDirty = true`), calling markDirty on the
+    // leaf must still mark the ancestors — it can't assume they're
+    // already dirty.
+    const root = Node.create();
+    const child = Node.create();
+    root.insertChild(child, 0);
+    root.calculateLayout(10, 10);
+
+    // Simulate external code that dirtied child but not root.
+    child._isDirty = true;
+    root._isDirty = false;
+
+    child.markDirty(); // must walk up and mark root
+    expect(root._isDirty).toBe(true);
+  });
+
+  test('markDirty is O(depth) not O(1) — no infinite recursion on cycle-free trees', () => {
+    // Sanity: 1000-deep tree, mark dirty at the bottom, ancestors all
+    // become dirty, no stack overflow.
+    const root = Node.create();
+    let leaf = root;
+    for (let i = 0; i < 1000; i++) {
+      const next = Node.create();
+      leaf.insertChild(next, 0);
+      leaf = next;
+    }
+    root.calculateLayout(10, 10);
+    leaf.markDirty();
+    expect(leaf._isDirty).toBe(true);
+    expect(root._isDirty).toBe(true);
   });
 });
 

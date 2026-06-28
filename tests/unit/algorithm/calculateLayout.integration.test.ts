@@ -222,7 +222,13 @@ describe('Align items (cross axis)', () => {
 // ─── STEP 10: reverse direction ──────────────────────────────────────────
 
 describe('STEP 10: reverse flex direction', () => {
-  test('RowReverse: items placed right-to-left', () => {
+  test('RowReverse: first source child at the trailing edge (right), walking left', () => {
+    // Upstream Yoga semantic for row-reverse: the FIRST source child
+    // sits at the trailing edge of the main axis, the LAST source
+    // child at the start edge. With width=100 and two 20-wide
+    // children, a (first source) goes at left=80, b (second) at 60.
+    // (The pre-fix behavior was "b at 0, a at 20" — placing from the
+    // start edge instead of the trailing edge.)
     const root = Node.create()
       .setWidth(100)
       .setHeight(10)
@@ -232,12 +238,11 @@ describe('STEP 10: reverse flex direction', () => {
     root.insertChild(a, 0);
     root.insertChild(b, 1);
     root.calculateLayout(100, 10);
-    // Source order: a, b. Visual: b at 0, a at 20.
-    expect(b.getComputedLeft()).toBe(0);
-    expect(a.getComputedLeft()).toBe(20);
+    expect(a.getComputedLeft()).toBe(80);
+    expect(b.getComputedLeft()).toBe(60);
   });
 
-  test('ColumnReverse: items placed bottom-to-top', () => {
+  test('ColumnReverse: first source child at the bottom, walking up', () => {
     const root = Node.create()
       .setWidth(10)
       .setHeight(100)
@@ -247,8 +252,114 @@ describe('STEP 10: reverse flex direction', () => {
     root.insertChild(a, 0);
     root.insertChild(b, 1);
     root.calculateLayout(10, 100);
-    expect(b.getComputedTop()).toBe(0);
-    expect(a.getComputedTop()).toBe(20);
+    expect(a.getComputedTop()).toBe(80);
+    expect(b.getComputedTop()).toBe(60);
+  });
+
+  test('RowReverse respects paddingLeft on the start edge', () => {
+    // Bug #1.4 regression: the old STEP 10 ignored padding/border on
+    // the start edge, placing the leftmost child at left=0 even when
+    // the parent had padding. After the fix, paddingLeft=10 shifts
+    // the entire content box: a (first source) at left=80 (= 10 + 70)
+    // and b (second source) at left=60 (= 10 + 50).
+    const root = Node.create()
+      .setWidth(100)
+      .setHeight(10)
+      .setFlexDirection(FlexDirection.RowReverse)
+      .setPadding(PhysicalEdge.Left, 10);
+    const a = Node.create().setWidth(20).setHeight(10);
+    const b = Node.create().setWidth(20).setHeight(10);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    root.calculateLayout(100, 10);
+    // Content box: width = 100 - 10 (paddingLeft) - 0 (paddingRight) = 90.
+    // a (first source) at trailing edge: childMainPos = 90 - 20 = 70,
+    //   absolute left = paddingStart + 70 = 10 + 70 = 80.
+    // b (second source) one width to the left: childMainPos = 50,
+    //   absolute left = 10 + 50 = 60.
+    expect(a.getComputedLeft()).toBe(80);
+    expect(b.getComputedLeft()).toBe(60);
+  });
+
+  test('RowReverse preserves cross-axis alignment (does not wipe it)', () => {
+    // Bug #1.4 regression: the old STEP 10 overwrote BOTH axes of
+    // `position[0/1]`, which clobbered the cross-axis offset that
+    // STEP 6c had computed. After the fix, only the main axis
+    // changes; cross-axis placement (e.g., alignItems: Center) is
+    // preserved.
+    const root = Node.create()
+      .setWidth(100)
+      .setHeight(20)
+      .setFlexDirection(FlexDirection.RowReverse)
+      .setAlignItems(Align.Center);
+    const a = Node.create().setWidth(20).setHeight(4);
+    const b = Node.create().setWidth(20).setHeight(4);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    root.calculateLayout(100, 20);
+    // Cross axis is Y; alignItems Center → vertical center of 20-tall
+    // box, child is 4 tall → top = (20-4)/2 = 8.
+    expect(a.getComputedTop()).toBe(8);
+    expect(b.getComputedTop()).toBe(8);
+  });
+});
+
+// ─── Bug #3.1 / #3.2: measure-func subtree recursion ─────────────────────
+
+describe('measure-func subtree recursion', () => {
+  test('wrapper Box without its own measureFunc derives basis from Text leaf in subtree', () => {
+    // Bug #3.2 regression: before the fix, `computeFlexBasisForChild`
+    // only checked `child.measureFunc` directly. A Box wrapping a
+    // Text leaf (Text has the measureFunc) would get basis=0 instead
+    // of Text's intrinsic size. After the fix, the helper walks the
+    // subtree to find the measure-func leaf.
+    const root = Node.create().setWidth(100).setHeight(50).setFlexDirection(FlexDirection.Row);
+    const wrapper = Node.create(); // no measureFunc
+    const text = Node.create().setMeasureFunc((w, _wm, _h, _hm) => ({
+      width: w, // returns the available width as its intrinsic width
+      height: 7,
+    }));
+    wrapper.insertChild(text, 0);
+    root.insertChild(wrapper, 0);
+    root.calculateLayout(100, 50);
+    // Wrapper's flex basis is the Text's intrinsic width (= availableMain = 100).
+    expect(wrapper.getComputedWidth()).toBe(100);
+    expect(text.getComputedWidth()).toBe(100);
+  });
+
+  test('3-level nesting Box > Box > Text (Text has measureFunc) propagates basis up', () => {
+    // Column direction → main axis is Y, so the measure func's height
+    // is the main-axis intrinsic size. Both inner and outer Boxes
+    // (which have no measure func of their own) should derive their
+    // main-axis basis from Text's height via the subtree walk.
+    const root = Node.create().setWidth(80).setHeight(20).setFlexDirection(FlexDirection.Column);
+    const outer = Node.create();
+    const inner = Node.create();
+    const text = Node.create().setMeasureFunc(() => ({ width: 30, height: 5 }));
+    root.insertChild(outer, 0);
+    outer.insertChild(inner, 0);
+    inner.insertChild(text, 0);
+    root.calculateLayout(80, 20);
+    // Text's height (= 5) is the main-axis intrinsic; both inner and
+    // outer get it as their basis via subtree recursion.
+    expect(text.getComputedHeight()).toBe(5);
+    expect(inner.getComputedHeight()).toBe(5);
+    expect(outer.getComputedHeight()).toBe(5);
+  });
+
+  test('pure layout subtree (no measureFunc anywhere) → basis = 0', () => {
+    // Bug #3.1 regression: if neither this child nor any descendant
+    // has a measureFunc, the basis should be 0 (not the availableMain
+    // — flex-grow would inflate it).
+    const root = Node.create().setWidth(100).setHeight(20).setFlexDirection(FlexDirection.Row);
+    const wrapper = Node.create().setFlexGrow(1);
+    const child = Node.create();
+    wrapper.insertChild(child, 0);
+    root.insertChild(wrapper, 0);
+    root.calculateLayout(100, 20);
+    // Wrapper has no measure func in subtree, so basis = 0. After
+    // flex-grow resolution (1 of 1 grow), it gets the full 100.
+    expect(wrapper.getComputedWidth()).toBe(100);
   });
 });
 

@@ -57,7 +57,10 @@ export type EdgeInput = PhysicalEdge;
 // ─── Public class ─────────────────────────────────────────────────────────
 
 export class Node {
-  readonly style: Style;
+  // `style` is non-readonly so `free()` and `reset()` can re-bind it
+  // to a fresh default-style object. Consumers should still treat it
+  // as a black box (mutate via setters, don't reassign from outside).
+  style: Style;
   readonly layout: PublicLayout;
   readonly config: Config;
   children: Node[] = [];
@@ -185,6 +188,7 @@ export class Node {
 
   setOverflow(o: Overflow): this {
     this.style.overflow = o;
+    this._isDirty = true;
     return this;
   }
 
@@ -332,9 +336,15 @@ export class Node {
     }
     this.children = [];
     this.parent = null;
+    this.style = createDefaultStyle();
     this._layoutResults = new LayoutResults();
     this._isDirty = true;
     this._hasNewLayout = false;
+    this._hasAutoMargin = false;
+    this._hasPadding = false;
+    this._hasBorder = false;
+    this._hasMargin = false;
+    this._hasPosition = false;
   }
 
   freeRecursive(): void {
@@ -347,19 +357,42 @@ export class Node {
   }
 
   reset(): void {
+    this.style = createDefaultStyle();
     this._layoutResults.reset();
     this._hasNewLayout = false;
     this._isDirty = true;
+    this._hasAutoMargin = false;
+    this._hasPadding = false;
+    this._hasBorder = false;
+    this._hasMargin = false;
+    this._hasPosition = false;
     for (const child of this.children) {
       child.reset();
     }
   }
 
   markDirty(): void {
-    if (this._isDirty) return;
+    // Propagate UP, not down. Cache invalidation contract: if a
+    // child's style changes, every ancestor's cached layout is also
+    // stale (the child's resolved size feeds into the parent's main-
+    // axis computation). Propagating down would force every
+    // descendant to recompute on every ancestor change — wasteful
+    // and breaks cache hit frequency.
+    //
+    // The `!this.parent._isDirty` guard is the optimization that
+    // maintains the invariant "dirty node ⇒ all ancestors dirty"
+    // without redundant work: if the parent is already dirty, the
+    // grandparent was already dirtied by whichever path marked the
+    // parent. We only recurse up when there's still an undirtied
+    // ancestor to mark. (Early-returning on `this._isDirty` alone
+    // would break the invariant when this node was dirtied by an
+    // external path that didn't walk all the way up.)
+    //
+    // For tree mutations (insert/remove) where every descendant IS
+    // stale, use `_markDirtyRecursive` — that propagates down.
     this._isDirty = true;
-    for (const child of this.children) {
-      child.markDirty();
+    if (this.parent !== null && !this.parent._isDirty) {
+      this.parent.markDirty();
     }
   }
 
@@ -404,11 +437,22 @@ export class Node {
   }
 
   getComputedRight(): number {
-    return this._layoutResults.position[2];
+    // Upstream Yoga semantic: distance from the parent's right edge.
+    // `this.layout.left` may be stale for non-leaf children (the
+    // algorithm only sets `layout.left/top` on the root + measure-func
+    // leaves), so we read the parent-relative left from
+    // `_layoutResults.position[0]` instead — that's authoritative
+    // for every node after `calculateLayoutImpl` runs.
+    const p = this.parent;
+    if (p === null) return 0;
+    return p.layout.width - this._layoutResults.position[0] - this.layout.width;
   }
 
   getComputedBottom(): number {
-    return this._layoutResults.position[3];
+    // Upstream Yoga semantic: distance from the parent's bottom edge.
+    const p = this.parent;
+    if (p === null) return 0;
+    return p.layout.height - this._layoutResults.position[1] - this.layout.height;
   }
 
   getComputedWidth(): number {
@@ -429,8 +473,13 @@ export class Node {
     // width/height live on `this.layout` because the algorithm writes
     // them there for every node.
     //
-    // right/bottom are derived: upstream Yoga treats them as computed
-    // values, not stored state.
+    // right/bottom on the PublicLayout object: per Yoga C++ spec these
+    // are the right/bottom EDGE in parent-relative coords (i.e.
+    // `left + width`). The standalone `getComputedRight/Bottom()`
+    // methods above return the distance-from-parent-edge inset
+    // (matches claude-code TS port + retty-ui/Ink reconciler
+    // expectations) — use the getter when you want the inset, read
+    // `layout.right` when you want the edge.
     const left = this._layoutResults.position[0];
     const top = this._layoutResults.position[1];
     const width = this.layout.width;
@@ -447,6 +496,22 @@ export class Node {
 
   getHasNewLayout(): boolean {
     return this._hasNewLayout;
+  }
+
+  /**
+   * Acknowledge that the consumer has observed the most recent layout.
+   * Resets the internal `_hasNewLayout` flag back to `false` so the
+   * next `calculateLayout` call will set it to `true` again.
+   *
+   * Yoga contract: `hasNewLayout()` should return `true` only between
+   * a layout computation and the consumer's acknowledgment. Without
+   * this, React reconcilers that re-render based on `hasNewLayout`
+   * would treat every node as perpetually dirty and repaint the
+   * whole tree on every pass.
+   */
+  markLayoutSeen(): this {
+    this._hasNewLayout = false;
+    return this;
   }
 
   // ─── Internals ───────────────────────────────────────────────────────

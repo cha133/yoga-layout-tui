@@ -138,6 +138,52 @@ function isMarginAutoOnEdge(node: Node, edge: PhysicalEdge): boolean {
 // ─── STEP 3: compute flex basis for a single child ────────────────────────
 
 /**
+ * Recursively check whether `node` or any descendant has a measure
+ * function. Used by the basis computation to decide whether to walk
+ * the subtree looking for the leaf that owns the intrinsic size, and
+ * to gate the AtMost constraint so pure layout subtrees don't get
+ * told "you have 100 available" and flex-grow into it.
+ */
+function hasMeasureFuncInSubtree(node: Node): boolean {
+  if (node.measureFunc) return true;
+  for (const c of node.children) {
+    if (hasMeasureFuncInSubtree(c)) return true;
+  }
+  return false;
+}
+
+/**
+ * Walk a subtree to find a measure-func node and return the main-axis
+ * intrinsic size it reports. Used when `computeFlexBasisForChild` is
+ * called on a non-leaf container that wraps a measure-func leaf
+ * somewhere in its subtree — the container's flex basis should be
+ * derived from the leaf's intrinsic size, not 0.
+ *
+ * Walks depth-first; the first measure-func node we hit is asked for
+ * its size. If multiple measure-func leaves exist, only the first
+ * (document order) contributes. (Multi-measure-func layouts are
+ * unusual; this matches the simple behavior the rest of the codebase
+ * uses.)
+ */
+function computeBasisFromMeasureSubtree(
+  node: Node,
+  availableInnerMain: number,
+  axisMain: boolean,
+): number {
+  if (node.measureFunc) {
+    const dim = axisMain ? Dimension.Width : Dimension.Height;
+    return measureChild(node, availableInnerMain, axisMain, dim);
+  }
+  for (const c of node.children) {
+    if (hasMeasureFuncInSubtree(c)) {
+      const result = computeBasisFromMeasureSubtree(c, availableInnerMain, axisMain);
+      if (Number.isFinite(result)) return result;
+    }
+  }
+  return Number.NaN;
+}
+
+/**
  * Resolve the main-axis size of a child given the parent's available
  * inner main-axis size.
  *
@@ -171,15 +217,26 @@ function computeFlexBasisForChild(
     }
   }
 
-  // (3) measure func — if leaf has a measureFunc, give it the available
-  // inner main as the size hint. MeasureFunc returns its intrinsic size
-  // for that axis; we use it as the basis.
-  if (Number.isNaN(basis) && child.measureFunc) {
-    const dim = axisMain ? Dimension.Width : Dimension.Height;
-    // We don't know the cross axis size yet — pass NaN. MeasureFunc
-    // should handle NaN by returning its unconstrained intrinsic size.
-    const result = measureChild(child, availableInnerMain, axisMain, dim);
-    basis = result;
+  // (3) measure func — direct on this node, or somewhere in its
+  // subtree (recursively). For the direct case, ask the measure func
+  // for its intrinsic size on the main axis. For the subtree case
+  // (e.g. a Box wrapping a Text leaf), recurse into the subtree to
+  // find the measure-func leaf and use its intrinsic size as the
+  // wrapper's basis. The recursion matches upstream Yoga's
+  // `YGNodeComputeFlexBasisForChild` which recurses through pure
+  // layout containers until it reaches a measure-func node.
+  if (Number.isNaN(basis)) {
+    if (child.measureFunc) {
+      const dim = axisMain ? Dimension.Width : Dimension.Height;
+      const result = measureChild(child, availableInnerMain, axisMain, dim);
+      basis = result;
+    } else if (hasMeasureFuncInSubtree(child)) {
+      // Find the measure-func leaf (or subtree root with the func)
+      // and ask IT for the basis. Recurse so a 3-level
+      // `Box > Box > Text` (Text has measureFunc) correctly derives
+      // the wrapper box's basis from Text's intrinsic size.
+      basis = computeBasisFromMeasureSubtree(child, availableInnerMain, axisMain);
+    }
   }
 
   if (Number.isNaN(basis)) basis = 0;
@@ -671,20 +728,46 @@ export function calculateLayoutImpl(
   results.measuredDimensions = [ownW, ownH];
 
   // ── STEP 10: reverse-direction placement ─────────────────────────
-  // For RowReverse / ColumnReverse, walk children in reverse source order
-  // and place them from the start edge. This matches CSS Flexbox semantics
-  // where row-reverse lays out children in reverse source order from the
-  // start edge.
+  // For RowReverse / ColumnReverse, the FIRST source child goes at
+  // the trailing edge of the main axis, then we walk forward through
+  // source order toward the start edge. So the loop iterates i=0..N-1
+  // (NOT reverse) but the cursor moves from the trailing edge toward
+  // the start edge.
+  //
+  // We deliberately update only the main-axis component of
+  // `position[0/1]`; the cross-axis component was already written by
+  // STEP 6c with the correct `paddingCrossStart + crossOffset` value
+  // and must NOT be overwritten (the old implementation wiped both
+  // axes, which broke cross-axis alignment for reverse containers).
   if (isReverse(effectiveFd)) {
-    let pos = 0;
-    for (let i = visibleChildren.length - 1; i >= 0; i--) {
+    const paddingMainStart = paddingBorderStart(node, axisMain, availableMain);
+    let cursor = availableInnerMain; // trailing edge of content box
+    for (let i = 0; i < visibleChildren.length; i++) {
       const child = visibleChildren[i]!;
+      // "Start" / "end" refer to the start/end of the main axis
+      // (= left/right for row, top/bottom for column), NOT to the
+      // box's visual leading/trailing edge in reverse — the physical
+      // edges are what marginStart / marginEnd resolve against.
+      const mLead = marginStart(child, axisMain, availableMain);
+      const mTrail = marginEnd(child, axisMain, availableMain);
+      const size = child._layoutResults.computedFlexBasis;
+      // Child's leading edge (toward start of box) = cursor (trailing
+      // edge of this child's bounding box, after its trailing margin)
+      // minus its trailing margin minus its own size.
+      const childMainPos = cursor - mTrail - size;
       if (axisMain) {
-        child._layoutResults.position[0] = pos;
+        child._layoutResults.position[0] = paddingMainStart + childMainPos;
+        // position[1] (Y/cross) is left as STEP 6c wrote it.
       } else {
-        child._layoutResults.position[1] = pos;
+        child._layoutResults.position[1] = paddingMainStart + childMainPos;
+        // position[0] (X/cross) is left as STEP 6c wrote it.
       }
-      pos += child._layoutResults.computedFlexBasis;
+      // Advance cursor past this child's leading margin + gap to
+      // the next source-order sibling.
+      cursor = childMainPos - mLead;
+      if (i < visibleChildren.length - 1) {
+        cursor -= gaps[i]!;
+      }
     }
   }
 
