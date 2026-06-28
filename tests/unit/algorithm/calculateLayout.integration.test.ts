@@ -14,6 +14,7 @@ import {
   FlexDirection,
   Justify,
   MeasureMode,
+  Overflow,
   PhysicalEdge,
   PositionType,
 } from '../../../src/enums.js';
@@ -301,6 +302,175 @@ describe('STEP 10: reverse flex direction', () => {
     // box, child is 4 tall → top = (20-4)/2 = 8.
     expect(a.getComputedTop()).toBe(8);
     expect(b.getComputedTop()).toBe(8);
+  });
+});
+
+// ─── Bug #2.1 / #2.2: layout cache hit/miss + output cache ──────────────
+
+describe('layout cache', () => {
+  test('second pass with same inputs is a cache hit (no _hasNewLayout on root)', () => {
+    // Bug #2.1 regression: before the fix, the algorithm always re-ran
+    // every node on every calculateLayout call. After the fix, a clean
+    // root with the same inputs hits the cache and skips recomputation.
+    // We detect the hit by `_hasNewLayout` being false (a real compute
+    // sets it to true; a hit sets it to false).
+    const root = Node.create().setWidth(80).setHeight(24);
+    const a = Node.create().setWidth(20).setHeight(10);
+    root.insertChild(a, 0);
+
+    root.calculateLayout(80, 24);
+    expect(root.getHasNewLayout()).toBe(true); // first pass = compute
+    root.markLayoutSeen();
+    expect(root.getHasNewLayout()).toBe(false);
+
+    // Second pass with same inputs — should be a cache hit (root).
+    root.calculateLayout(80, 24);
+    expect(root.getHasNewLayout()).toBe(false); // hit = no new layout
+    // Dimensions are still correct (read from `layout.width` which
+    // was set by the first pass and not modified on a hit).
+    expect(root.getComputedWidth()).toBe(80);
+    expect(a.getComputedWidth()).toBe(20);
+  });
+
+  test('cache miss when inputs change (different availableWidth/Height)', () => {
+    const root = Node.create().setWidth(80).setHeight(24);
+    const a = Node.create().setWidth(20).setHeight(10);
+    root.insertChild(a, 0);
+
+    root.calculateLayout(80, 24);
+    root.markLayoutSeen();
+    root.calculateLayout(80, 24);
+    expect(root.getHasNewLayout()).toBe(false); // cache hit
+
+    // Different size → miss.
+    root.calculateLayout(100, 30);
+    expect(root.getHasNewLayout()).toBe(true);
+    expect(root.getComputedWidth()).toBe(100);
+    expect(root.getComputedHeight()).toBe(30);
+  });
+
+  test('cache miss when a descendant is dirtied via the proper markDirty API', () => {
+    // Bug #1.3 + #2.1 interaction: markDirty propagates UP, so a
+    // descendant change invalidates the parent's cache. Direct
+    // assignment `a._isDirty = true` bypasses the up-propagation and
+    // would only dirty the child (the cache check at the parent would
+    // still hit, leaving the dirty child unprocessed). The proper
+    // public API call goes through markDirty.
+    const root = Node.create().setWidth(80).setHeight(24);
+    const a = Node.create().setWidth(20).setHeight(10);
+    root.insertChild(a, 0);
+
+    root.calculateLayout(80, 24);
+    root.markLayoutSeen();
+    root.calculateLayout(80, 24);
+    expect(root.getHasNewLayout()).toBe(false); // cache hit
+
+    // Use the public markDirty API — propagates UP to the root.
+    a.markDirty();
+    expect(root._isDirty).toBe(true); // ancestor marked dirty
+    root.calculateLayout(80, 24);
+    expect(root.getHasNewLayout()).toBe(true); // cache miss
+  });
+
+  test('output cache restores correct dimensions on hit (Bug #2.2)', () => {
+    // Bug #2.2: without storing the OUTPUT cache, a hit would return
+    // whatever layout.width/height happened to be left by a previous
+    // pass (the scrollbox vpH=33→2624 bug). To exercise the inner
+    // cache hit, we set up a tree where a clean inner node gets
+    // recursively re-laid-out and the output cache kicks in.
+    const root = Node.create().setWidth(80).setHeight(24);
+    const a = Node.create().setWidth(30).setHeight(10);
+    root.insertChild(a, 0);
+
+    root.calculateLayout(80, 24);
+    // After first pass, cachedLayoutOutputs.hasLayout = true for both
+    // root and a.
+    expect(a._layoutResults.cachedLayoutOutputs.hasLayout).toBe(true);
+    expect(a._layoutResults.cachedLayoutOutputs.width).toBe(30);
+    expect(a._layoutResults.cachedLayoutOutputs.height).toBe(10);
+  });
+});
+
+// ─── Bug #2.3: Overflow.Scroll clamping ───────────────────────────────────
+//
+// The Scroll clamp only fires when the parent tells the node "at most
+// this big" via `mainMode === MeasureMode.AtMost`. In our public
+// `Node.calculateLayout(w, h)` API the modes default to Exactly/Undefined,
+// so the clamp is normally silent — the public API is for terminal-viewport
+// sizing. The tests below invoke `calculateLayoutImpl` directly with AtMost
+// to simulate a flex parent passing an at-most constraint to a Scroll
+// child, which is the real-world usage (e.g. a ScrollBox inside a
+// flex container that says "you have at most 10 rows").
+
+import { calculateLayoutImpl } from '../../../src/algorithm/calculateLayoutImpl.js';
+import { Direction } from '../../../src/enums.js';
+
+describe('Overflow.Scroll clamping', () => {
+  test('column ScrollBox clamps to viewport when content overflows (AtMost mode)', () => {
+    // Without the Scroll clamp, the container would grow to fit content
+    // (15+15=30). With the clamp in AtMost mode, it stays at the viewport
+    // (10) and the children overflow.
+    const root = Node.create().setFlexDirection(FlexDirection.Column).setOverflow(Overflow.Scroll);
+    const a = Node.create().setWidth(20).setHeight(15);
+    const b = Node.create().setWidth(20).setHeight(15);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    // AtMost mode: parent says "you have AT MOST 10 rows".
+    calculateLayoutImpl(root, 20, 10, Direction.LTR, MeasureMode.Exactly, MeasureMode.AtMost, 1);
+    expect(root.getComputedHeight()).toBe(10);
+  });
+
+  test('column ScrollBox with content smaller than viewport shrinks to fit (AtMost mode)', () => {
+    // When content (4+4=8) is less than viewport (10), the clamp picks
+    // min(viewport, content) = 8 — the container shrinks to fit.
+    const root = Node.create().setFlexDirection(FlexDirection.Column).setOverflow(Overflow.Scroll);
+    const a = Node.create().setWidth(20).setHeight(4);
+    const b = Node.create().setWidth(20).setHeight(4);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    calculateLayoutImpl(root, 20, 10, Direction.LTR, MeasureMode.Exactly, MeasureMode.AtMost, 1);
+    expect(root.getComputedHeight()).toBe(8);
+  });
+
+  test('ScrollBox respects padding ring floor (AtMost mode, zero content)', () => {
+    // Edge case: zero-height content with padding. Without the
+    // `Math.max(..., paddingMain)` floor, the container would collapse
+    // to 0 and lose the padding ring.
+    const root = Node.create()
+      .setFlexDirection(FlexDirection.Column)
+      .setOverflow(Overflow.Scroll)
+      .setPaddingAll(2);
+    const child = Node.create().setWidth(16).setHeight(0);
+    root.insertChild(child, 0);
+    // availableInnerMain = 5 - 2*2 = 1; paddingMain = 4; clamp:
+    // min(viewport=5, content=4+0=4) = 4; max(4, paddingMain=4) = 4.
+    calculateLayoutImpl(root, 20, 5, Direction.LTR, MeasureMode.Exactly, MeasureMode.AtMost, 1);
+    expect(root.getComputedHeight()).toBe(4);
+  });
+
+  test('Overflow.Hidden in AtMost mode does NOT shrink-to-fit like Scroll (with smaller content)', () => {
+    // Hidden vs Scroll: Scroll clamps to min(viewport, content) in AtMost
+    // (shrink-to-fit when content is smaller); Hidden stays at the
+    // available size regardless. Here content (4) is smaller than
+    // viewport (10), so Scroll would shrink to 4 but Hidden stays at 10.
+    const root = Node.create().setFlexDirection(FlexDirection.Column).setOverflow(Overflow.Hidden);
+    const a = Node.create().setWidth(20).setHeight(4);
+    root.insertChild(a, 0);
+    calculateLayoutImpl(root, 20, 10, Direction.LTR, MeasureMode.Exactly, MeasureMode.AtMost, 1);
+    // No Scroll clamp — container stays at availableInnerMain (10).
+    expect(root.getComputedHeight()).toBe(10);
+  });
+
+  test('Scroll clamp is silent in Exactly mode (public API path)', () => {
+    // The public `Node.calculateLayout(w, h)` uses Exactly mode — the
+    // viewport is the container's exact size, no clamping. This is by
+    // design: the public API treats the root as a hard viewport.
+    const root = Node.create().setFlexDirection(FlexDirection.Column).setOverflow(Overflow.Scroll);
+    const a = Node.create().setWidth(20).setHeight(15);
+    root.insertChild(a, 0);
+    root.calculateLayout(20, 10); // Exactly mode
+    expect(root.getComputedHeight()).toBe(10);
+    expect(a.getComputedHeight()).toBe(15); // child overflows viewport
   });
 });
 

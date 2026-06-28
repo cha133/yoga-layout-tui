@@ -88,24 +88,35 @@ export function resolveValue(v: Value, axisSize: number): number {
 /**
  * The user-facing input format for dimension / margin / padding / etc.
  * Accepts:
- *   - a plain number → Point
+ *   - a finite number → Point
+ *   - the string `"auto"` → Auto
  *   - a string ending in `%` (e.g., `"50%"`) → Percent
- *   - the literal `"auto"` → Auto
+ *   - a numeric string (e.g., `"5"`) → Point
+ *   - `Infinity` / `NaN` / `null` / non-numeric strings → Undefined
+ *     (silently — the alternative was throwing, but consumers like
+ *     Ink pass `Infinity` to mean "unconstrained" and the upstream
+ *     Yoga WASM `parseDimension` returns Undefined for non-finite
+ *     values, matching `YGFloatIsUndefined` in C++)
  *
- * Anything else throws — invalid inputs should fail loudly at the
- * call site, not silently turn into a default.
+ * Loosened from the v0.2 strict variant to match the claude-code TS
+ * port and upstream Yoga JS WASM behavior. Pre-v0.4 this function
+ * threw on `Infinity` / `NaN` / non-numeric strings, which broke
+ * `height={Infinity}` and `width="5"`-style inputs.
  */
-export type DimensionInput = number | `${number}%` | 'auto';
+export type DimensionInput = number | string;
 
 export function parseDimensionInput(input: DimensionInput): Value {
   if (input === 'auto') return AUTO_VALUE;
-  if (typeof input === 'number') return pointValue(input);
-  if (typeof input === 'string') {
-    const pct = parseFloat(input);
-    if (!Number.isFinite(pct)) {
-      throw new Error(`Invalid dimension input: ${input}`);
-    }
-    return percentValue(pct);
+  if (typeof input === 'number') {
+    return Number.isFinite(input) ? pointValue(input) : UNDEFINED_VALUE;
   }
-  throw new Error(`Invalid dimension input: ${String(input)}`);
+  if (typeof input === 'string') {
+    if (input.endsWith('%')) {
+      const pct = parseFloat(input);
+      return Number.isFinite(pct) ? percentValue(pct) : UNDEFINED_VALUE;
+    }
+    const n = parseFloat(input);
+    return Number.isFinite(n) ? pointValue(n) : UNDEFINED_VALUE;
+  }
+  return UNDEFINED_VALUE;
 }

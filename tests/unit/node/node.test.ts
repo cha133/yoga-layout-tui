@@ -86,9 +86,33 @@ describe('Node dimension setters', () => {
     expect(n._isDirty).toBe(true);
   });
 
-  test('invalid percent string throws', () => {
+  test('invalid dimension string → Undefined (does not throw)', () => {
+    // Bug #3.4 (parseDimensionInput 放宽): v0.2 used to throw on
+    // non-numeric strings; v0.4 returns Undefined to match upstream
+    // Yoga JS WASM + claude-code TS port behavior. Consumers like Ink
+    // pass `Infinity` / unparseable strings and expect graceful
+    // fallback, not an exception.
     const n = Node.create();
-    expect(() => n.setWidth('not-a-number%' as `${number}%`)).toThrow();
+    expect(() => n.setWidth('not-a-number%')).not.toThrow();
+    expect(n.style.width.unit).toBe(Unit.Undefined);
+  });
+
+  test('non-finite numbers (Infinity / NaN) → Undefined', () => {
+    const n = Node.create();
+    n.setWidth(Number.POSITIVE_INFINITY);
+    expect(n.style.width.unit).toBe(Unit.Undefined);
+    n.setWidth(Number.NaN);
+    expect(n.style.width.unit).toBe(Unit.Undefined);
+  });
+
+  test('numeric string (no `%`) → Point (not Percent)', () => {
+    // Pre-v0.4 the function treated all strings as Percent, so
+    // setWidth("5") would create a Percent(5) Value. v0.4 matches
+    // the claude-code TS port: bare numeric strings are Point.
+    const n = Node.create();
+    n.setWidth('5');
+    expect(n.style.width.unit).toBe(Unit.Point);
+    expect(rawValue(n.style.width)).toBe(5);
   });
 });
 

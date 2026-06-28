@@ -40,6 +40,18 @@ export class LayoutResults {
   // a "did the layout of this subtree change?" check).
   cachedLayout: CachedMeasurement = emptyCachedMeasurement();
 
+  // Output cache for the single-slot layout hit: stores the
+  // (width, height) `calculateLayoutImpl` produced for the inputs
+  // recorded in `cachedLayout`. Without this, a cache hit would return
+  // whatever `layout.width/height` happened to be left by the last
+  // call (the scrollbox vpH=33→2624 bug: cache hit restores stale
+  // intrinsic height instead of constrained viewport height).
+  cachedLayoutOutputs: { width: number; height: number; hasLayout: boolean } = {
+    width: Number.NaN,
+    height: Number.NaN,
+    hasLayout: false,
+  };
+
   // 4-edge insets and offsets [Left, Right, Top, Bottom].
   position: [number, number, number, number] = [0, 0, 0, 0];
   margin: [number, number, number, number] = [0, 0, 0, 0];
@@ -62,6 +74,7 @@ export class LayoutResults {
     this.nextCachedMeasurementsIndex = 0;
     this.cachedMeasurements = Array.from({ length: CACHE_SLOTS }, () => emptyCachedMeasurement());
     this.cachedLayout = emptyCachedMeasurement();
+    this.cachedLayoutOutputs = { width: Number.NaN, height: Number.NaN, hasLayout: false };
     this.position = [0, 0, 0, 0];
     this.margin = [0, 0, 0, 0];
     this.border = [0, 0, 0, 0];

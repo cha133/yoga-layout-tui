@@ -17,6 +17,7 @@ import {
   Display,
   Justify,
   MeasureMode,
+  Overflow,
   PhysicalEdge,
   PositionType,
   Unit,
@@ -377,8 +378,8 @@ export function calculateLayoutImpl(
   availableWidth: number,
   availableHeight: number,
   ownerDirection: Direction,
-  _widthSizingMode: MeasureMode,
-  _heightSizingMode: MeasureMode,
+  widthSizingMode: MeasureMode,
+  heightSizingMode: MeasureMode,
   generationCount: number,
 ): void {
   // ── Cache-key setup (used by measure-func leaves too) ────────────
@@ -387,15 +388,41 @@ export function calculateLayoutImpl(
   results.configVersion = node.config.version;
   results.lastOwnerDirection = ownerDirection;
 
+  // ── Layout cache hit (Bug #2.1 / #2.2) ────────────────────────────
+  // Skip the entire layout pass when:
+  //   - the node is clean (no descendant changed since the last pass)
+  //   - the inputs match what was used for the cached pass
+  //     (avail size + sizing mode + generation + config version)
+  //   - the cached pass actually produced output (hasLayout flag
+  //     distinguishes "first call" from "cached pass with result")
+  // On hit, restore the cached (width, height) and return — no
+  // recursion, no child placement. Bug #2.2 (output cache): without
+  // restoring the cached outputs, a hit would return whatever
+  // layout.width/height happened to be left by the previous pass,
+  // which can be the intrinsic content height from a measure pass
+  // instead of the constrained viewport height (the scrollbox
+  // vpH=33→2624 bug).
+  if (
+    !node._isDirty &&
+    results.cachedLayoutOutputs.hasLayout &&
+    results.generationCount === generationCount &&
+    results.configVersion === node.config.version &&
+    results.cachedLayout.availableWidth === availableWidth &&
+    results.cachedLayout.availableHeight === availableHeight &&
+    results.cachedLayout.widthSizingMode === widthSizingMode &&
+    results.cachedLayout.heightSizingMode === heightSizingMode
+  ) {
+    node.layout.width = results.cachedLayoutOutputs.width;
+    node.layout.height = results.cachedLayoutOutputs.height;
+    node._hasNewLayout = false; // hit = no new layout to report
+    return;
+  }
+
   // NOTE: do NOT reset `results.position[0/1]` here. For the root call,
   // `calculateLayout()` (the public entry) sets them to (0, 0) before
   // invoking us. For non-root nodes, the parent's STEP 6c writes the
   // child's local offset before recursing into us — if we reset to 0
   // here we'd clobber the parent's just-written value.
-  //
-  // The recursive layout-pass cache check (single-slot, lazy) is skipped
-  // for simplicity — full Yoga has an 8-slot measure cache, but for
-  // TUI trees (small), the generation counter handles invalidation.
 
   // ── Resolve effective flex direction (RTL is identity for TUI) ──
   const effectiveFd = resolveDirection(node.style.flexDirection, ownerDirection);
@@ -405,6 +432,7 @@ export function calculateLayoutImpl(
   // ── STEP 1+2: compute inner sizes (after padding + border) ──────
   const availableMain = axisMain ? availableWidth : availableHeight;
   const availableCross = axisMain ? availableHeight : availableWidth;
+  const mainMode: MeasureMode = axisMain ? widthSizingMode : heightSizingMode;
   const availableInnerMain = Number.isFinite(availableMain)
     ? Math.max(0, availableMain - paddingBorderOnAxis(node, axisMain, availableMain))
     : Number.NaN;
@@ -703,8 +731,24 @@ export function calculateLayoutImpl(
   // 0 height and hid their descendants. The previous code used
   // `Number.isFinite(availableInnerMain) ? availableInnerMain : ...`
   // which accepted 0 as "finite" and left content containers empty.
-  const ownMainBound =
+  //
+  // Overflow.Scroll clamping: when the parent asked us for an "at most
+  // this big" main size (`mainMode === AtMost`) AND the node has
+  // `overflow: scroll`, the main size is `min(viewport, content)` —
+  // clamps to the viewport when content overflows, shrinks to fit
+  // when content is smaller. The `max(..., paddingMain)` floor
+  // preserves the padding ring even when content is 0.
+  let ownMainBound =
     availableInnerMain > 0 ? availableInnerMain + paddingMain : lineMainSize + paddingMain;
+  if (
+    mainMode === MeasureMode.AtMost &&
+    node.style.overflow === Overflow.Scroll &&
+    Number.isFinite(availableInnerMain)
+  ) {
+    const viewport = availableInnerMain + paddingMain;
+    const content = lineMainSize + paddingMain;
+    ownMainBound = Math.max(Math.min(viewport, content), paddingMain);
+  }
   const ownCrossBound = effectiveLineCross + paddingCross;
 
   let ownW: number;
@@ -809,4 +853,21 @@ export function calculateLayoutImpl(
   node.layout.height = roundValueToPixelGrid(node.layout.height, psf);
   results.measuredDimensions[0] = roundValueToPixelGrid(ownW, psf);
   results.measuredDimensions[1] = roundValueToPixelGrid(ownH, psf);
+
+  // ── Cache write (Bug #2.1 / #2.2) ────────────────────────────────
+  // Record the inputs that produced this layout pass + the outputs
+  // (width, height) for the next cache hit. The output cache is
+  // critical: without storing it, a hit on a later pass would return
+  // whatever `layout.width/height` happened to be left from a previous
+  // measure pass (intrinsic content size), instead of the constrained
+  // viewport size we just computed (the scrollbox vpH=33→2624 bug).
+  results.cachedLayout.availableWidth = availableWidth;
+  results.cachedLayout.availableHeight = availableHeight;
+  results.cachedLayout.widthSizingMode = widthSizingMode;
+  results.cachedLayout.heightSizingMode = heightSizingMode;
+  results.cachedLayout.computedWidth = node.layout.width;
+  results.cachedLayout.computedHeight = node.layout.height;
+  results.cachedLayoutOutputs.width = node.layout.width;
+  results.cachedLayoutOutputs.height = node.layout.height;
+  results.cachedLayoutOutputs.hasLayout = true;
 }
