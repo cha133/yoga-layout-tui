@@ -14,6 +14,7 @@ import {
   FlexDirection,
   Justify,
   MeasureMode,
+  PhysicalEdge,
   PositionType,
 } from '../../../src/enums.js';
 import { Node } from '../../../src/node/node.js';
@@ -394,6 +395,82 @@ describe('TUI scenario: classic 3-zone layout', () => {
 
     expect(title.getComputedLeft()).toBe(0);
     expect(status.getComputedLeft()).toBe(65);
+  });
+});
+
+// ─── Margin ─────────────────────────────────────────────────────────────
+
+describe('Margin (point)', () => {
+  test('marginLeft offsets the child from the parent edge', () => {
+    const root = Node.create().setWidth(20).setHeight(1).setFlexDirection(FlexDirection.Row);
+    const a = Node.create().setWidth(5).setHeight(1).setMargin(PhysicalEdge.Left, 2);
+    root.insertChild(a, 0);
+    root.calculateLayout(20, 1);
+    expect(a.getComputedLeft()).toBe(2); // margin pushes child right by 2
+  });
+
+  test('marginRight consumes inner main so siblings start after margin zone', () => {
+    const root = Node.create().setWidth(20).setHeight(1).setFlexDirection(FlexDirection.Row);
+    const a = Node.create().setWidth(5).setHeight(1).setMargin(PhysicalEdge.Right, 3);
+    const b = Node.create().setWidth(5).setHeight(1);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    root.calculateLayout(20, 1);
+    expect(a.getComputedLeft()).toBe(0);
+    // a occupies 5 cols + 3 cols margin-right = 8 cols total → b starts at 8
+    expect(b.getComputedLeft()).toBe(8);
+  });
+
+  test('vertical margin offsets in Column flex', () => {
+    const root = Node.create().setWidth(10).setHeight(10).setFlexDirection(FlexDirection.Column);
+    const a = Node.create().setWidth(10).setHeight(2).setMargin(PhysicalEdge.Top, 1);
+    root.insertChild(a, 0);
+    root.calculateLayout(10, 10);
+    expect(a.getComputedTop()).toBe(1); // margin-top pushes down by 1
+  });
+});
+
+describe('Margin: auto', () => {
+  test('marginLeft: auto on a single child centers it on the main axis', () => {
+    // Row 10 wide, one child 4 wide → free space 6 → split between
+    // marginLeft:auto and marginRight:auto → 3 each → child centered
+    const root = Node.create().setWidth(10).setHeight(1).setFlexDirection(FlexDirection.Row);
+    const a = Node.create()
+      .setWidth(4)
+      .setHeight(1)
+      .setMargin(PhysicalEdge.Left, 'auto')
+      .setMargin(PhysicalEdge.Right, 'auto');
+    root.insertChild(a, 0);
+    root.calculateLayout(10, 1);
+    expect(a.getComputedLeft()).toBe(3); // (10 - 4) / 2 = 3
+  });
+
+  test('marginLeft: auto pushes child to trailing edge (like FlexEnd)', () => {
+    const root = Node.create().setWidth(10).setHeight(1).setFlexDirection(FlexDirection.Row);
+    const a = Node.create().setWidth(4).setHeight(1).setMargin(PhysicalEdge.Left, 'auto'); // only one auto edge
+    root.insertChild(a, 0);
+    root.calculateLayout(10, 1);
+    // Free space 6 → all 6 goes to marginLeft:auto → child at x=6
+    expect(a.getComputedLeft()).toBe(6);
+  });
+
+  test('margin auto overrides justifyContent', () => {
+    // Container says SpaceBetween, but a child has marginLeft:auto —
+    // the free space goes to the auto margin instead of being distributed.
+    const root = Node.create()
+      .setWidth(20)
+      .setHeight(1)
+      .setFlexDirection(FlexDirection.Row)
+      .setJustifyContent(Justify.SpaceBetween);
+    const a = Node.create().setWidth(4).setHeight(1).setMargin(PhysicalEdge.Left, 'auto');
+    const b = Node.create().setWidth(4).setHeight(1);
+    root.insertChild(a, 0);
+    root.insertChild(b, 1);
+    root.calculateLayout(20, 1);
+    // a gets all free space (20-4-4=12) as marginLeft → at x=12
+    // b starts right after a (with no margin) → at x=16
+    expect(a.getComputedLeft()).toBe(12);
+    expect(b.getComputedLeft()).toBe(16);
   });
 });
 

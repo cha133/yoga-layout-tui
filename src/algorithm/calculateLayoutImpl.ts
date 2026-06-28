@@ -19,6 +19,7 @@ import {
   MeasureMode,
   PhysicalEdge,
   PositionType,
+  Unit,
 } from '../enums.js';
 import type { Node } from '../node/node.js';
 import { isDefinedValue, isUndefinedValue, resolveValue, type Value } from '../value.js';
@@ -66,6 +67,56 @@ function paddingBorderStart(node: Node, axisMain: boolean, availableAxis: number
     total += resolveValue(node.style.border[startKey]!, availableAxis);
   }
   return Number.isFinite(total) ? total : 0;
+}
+
+// ─── Margin helpers ────────────────────────────────────────────────────────
+//
+// Margins behave differently from padding: they're INSIDE the parent's
+// content box (between the padding ring and the children), so they:
+//   - shrink the parent's effective inner size (child has less room)
+//   - push the child AWAY from the parent's edge by the margin amount
+//   - count toward the line's total main consumption (so siblings don't
+//     overlap the margin zone)
+//
+// We resolve margin per-side (4 physical edges, no Horizontal/Vertical/All
+// shortcuts — TUI users set explicit margins). `margin: auto` is resolved
+// later by the algorithm itself once it knows the line's free space.
+
+function marginOnEdge(node: Node, edge: PhysicalEdge, ownerSize: number): number {
+  const v = node.style.margin[edge]!;
+  // Undefined edges default to 0 (margin not set on this side). Auto is
+  // also resolved to 0 here; the main loop substitutes autoMainMarginSize
+  // (free space split evenly across auto edges) for actual positioning.
+  if (v.unit === Unit.Undefined || v.unit === Unit.Auto) return 0;
+  const r = resolveValue(v, ownerSize);
+  return Number.isFinite(r) ? r : 0;
+}
+
+function marginOnAxis(node: Node, axisMain: boolean, ownerAxis: number): number {
+  if (!node._hasMargin) return 0;
+  const startKey = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
+  const endKey = axisMain ? PhysicalEdge.Right : PhysicalEdge.Bottom;
+  let total = 0;
+  total += marginOnEdge(node, startKey, ownerAxis);
+  total += marginOnEdge(node, endKey, ownerAxis);
+  return Number.isFinite(total) ? total : 0;
+}
+
+function marginStart(node: Node, axisMain: boolean, ownerAxis: number): number {
+  if (!node._hasMargin) return 0;
+  const startKey = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
+  return marginOnEdge(node, startKey, ownerAxis);
+}
+
+function marginEnd(node: Node, axisMain: boolean, ownerAxis: number): number {
+  if (!node._hasMargin) return 0;
+  const endKey = axisMain ? PhysicalEdge.Right : PhysicalEdge.Bottom;
+  return marginOnEdge(node, endKey, ownerAxis);
+}
+
+function isMarginAutoOnEdge(node: Node, edge: PhysicalEdge): boolean {
+  if (!node._hasAutoMargin) return false;
+  return node.style.margin[edge]!.unit === Unit.Auto;
 }
 
 // ─── STEP 3: compute flex basis for a single child ────────────────────────
@@ -291,14 +342,37 @@ export function calculateLayoutImpl(
   }
 
   // ── STEP 3: compute flex basis for each child ────────────────────
+  // Margins shrink the effective inner main/cross (children have less room
+  // to fit). Compute per-child total margin so resolveFlexibleLengths in
+  // STEP 5 sees the right available size.
+  const childMainMargin: number[] = new Array(visibleChildren.length);
+  const childCrossMargin: number[] = new Array(visibleChildren.length);
+  for (let i = 0; i < visibleChildren.length; i++) {
+    const child = visibleChildren[i]!;
+    const mM = marginOnAxis(child, true, availableInnerMain);
+    const mC = marginOnAxis(child, false, availableInnerCross);
+    childMainMargin[i] = mM;
+    childCrossMargin[i] = mC;
+  }
+  const totalMainMargin = childMainMargin.reduce((a, b) => a + b, 0);
+  const totalCrossMargin = childCrossMargin.reduce((a, b) => a + b, 0);
+  // Available inner sizes already account for padding/border; subtract
+  // margin too so children don't try to fit in a region margins eat into.
+  const availableInnerMainForBasis = Number.isFinite(availableInnerMain)
+    ? Math.max(0, availableInnerMain - totalMainMargin)
+    : Number.NaN;
+  const availableInnerCrossForBasis = Number.isFinite(availableInnerCross)
+    ? Math.max(0, availableInnerCross - totalCrossMargin)
+    : Number.NaN;
+
   for (const child of visibleChildren) {
-    const basis = computeFlexBasisForChild(child, availableInnerMain, axisMain);
+    const basis = computeFlexBasisForChild(child, availableInnerMainForBasis, axisMain);
     child._layoutResults.computedFlexBasis = basis;
   }
 
   // ── STEP 5: resolve flex grow/shrink (single pass) ───────────────
   const gapMain = isDefinedValue(node.style.gap[axisMain ? 1 : 0]!)
-    ? resolveValue(node.style.gap[axisMain ? 1 : 0]!, availableInnerMain)
+    ? resolveValue(node.style.gap[axisMain ? 1 : 0]!, availableInnerMainForBasis)
     : 0;
   // Gap array: gaps BETWEEN items. For N items there are N-1 gaps. For N<=1
   // no gaps. We split gap into a per-gap accumulator.
@@ -306,7 +380,7 @@ export function calculateLayoutImpl(
   for (let i = 0; i < Math.max(0, visibleChildren.length - 1); i++) {
     gaps.push(gapMain);
   }
-  resolveFlexibleLengths(visibleChildren, availableInnerMain, gaps);
+  resolveFlexibleLengths(visibleChildren, availableInnerMainForBasis, gaps);
 
   // ── STEP 6a: compute each child's cross-axis size ────────────────
   // Cross-axis size: use child's own width/height if set, else fall
@@ -316,7 +390,7 @@ export function calculateLayoutImpl(
   const childCrossSizes: number[] = new Array(visibleChildren.length);
   for (let i = 0; i < visibleChildren.length; i++) {
     const child = visibleChildren[i]!;
-    let childCrossSize = computeChildCrossSize(child, availableInnerCross, axisMain);
+    let childCrossSize = computeChildCrossSize(child, availableInnerCrossForBasis, axisMain);
     if (Number.isNaN(childCrossSize)) {
       childCrossSize = availableInnerCross;
     }
@@ -339,36 +413,68 @@ export function calculateLayoutImpl(
   const effectiveLineCross = containerCross;
 
   // ── Compute main-axis offsets from justifyContent + gaps ─────────
+  // `used` includes children's main-axis bases + gaps + their non-auto
+  // main-axis margins. Margins are part of a child's consumed main
+  // space — siblings must not overlap the margin zone (CSS flex §9.3).
   const mainAxisSize = availableInnerMain;
   let mainCursor = 0;
   let freeSpace = 0;
   if (Number.isFinite(mainAxisSize)) {
     let used = gaps.reduce((a, g) => a + g, 0);
-    for (const child of visibleChildren) used += child._layoutResults.computedFlexBasis;
+    for (let i = 0; i < visibleChildren.length; i++) {
+      const child = visibleChildren[i]!;
+      used += child._layoutResults.computedFlexBasis;
+      // Only count margins that resolve to a concrete number. Auto
+      // margins are absorbed later as flex grow/shrink-like spacing.
+      if (child._hasMargin && !child._hasAutoMargin) {
+        used += childMainMargin[i]!;
+      }
+    }
     freeSpace = mainAxisSize - used;
     if (freeSpace < 0) freeSpace = 0; // children overflow; align left
   }
-  switch (node.style.justifyContent) {
-    case Justify.Center:
-      mainCursor = freeSpace / 2;
-      break;
-    case Justify.FlexEnd:
-      mainCursor = freeSpace;
-      break;
-    case Justify.SpaceBetween:
-      if (visibleChildren.length > 1 && freeSpace > 0) {
-        const betweenGap = freeSpace / (visibleChildren.length - 1);
-        const newGaps: number[] = [];
-        for (let i = 0; i < Math.max(0, visibleChildren.length - 1); i++) {
-          newGaps.push(gapMain + betweenGap);
+
+  // margin: auto OVERRIDES justify-content on the main axis — the free
+  // space goes to the auto margins instead of being distributed per
+  // justifyContent. Count how many auto margin edges exist across all
+  // flow children so we can size each one evenly.
+  let numAutoMainMargins = 0;
+  if (Number.isFinite(mainAxisSize)) {
+    for (let i = 0; i < visibleChildren.length; i++) {
+      const child = visibleChildren[i]!;
+      if (!child._hasAutoMargin) continue;
+      const mainLead = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
+      const mainTrail = axisMain ? PhysicalEdge.Right : PhysicalEdge.Bottom;
+      if (isMarginAutoOnEdge(child, mainLead)) numAutoMainMargins++;
+      if (isMarginAutoOnEdge(child, mainTrail)) numAutoMainMargins++;
+    }
+  }
+  const autoMainMarginSize =
+    numAutoMainMargins > 0 && freeSpace > 0 ? freeSpace / numAutoMainMargins : 0;
+
+  if (numAutoMainMargins === 0) {
+    switch (node.style.justifyContent) {
+      case Justify.Center:
+        mainCursor = freeSpace / 2;
+        break;
+      case Justify.FlexEnd:
+        mainCursor = freeSpace;
+        break;
+      case Justify.SpaceBetween:
+        if (visibleChildren.length > 1 && freeSpace > 0) {
+          const betweenGap = freeSpace / (visibleChildren.length - 1);
+          const newGaps: number[] = [];
+          for (let i = 0; i < Math.max(0, visibleChildren.length - 1); i++) {
+            newGaps.push(gapMain + betweenGap);
+          }
+          gaps.length = 0;
+          gaps.push(...newGaps);
         }
-        gaps.length = 0;
-        gaps.push(...newGaps);
-      }
-      break;
-    default:
-      mainCursor = 0;
-      break;
+        break;
+      default:
+        mainCursor = 0;
+        break;
+    }
   }
 
   // ── STEP 6c + 7 + 8: position each child, then recurse ───────────
@@ -381,8 +487,29 @@ export function calculateLayoutImpl(
     const childMainSize = child._layoutResults.computedFlexBasis;
     const childCrossSize = childCrossSizes[i]!;
 
+    // Resolve this child's margins. Auto margins override the concrete
+    // margin value with autoMainMarginSize (the equally-split free space).
+    const mainLeadEdge = axisMain ? PhysicalEdge.Left : PhysicalEdge.Top;
+    const mainTrailEdge = axisMain ? PhysicalEdge.Right : PhysicalEdge.Bottom;
+    const crossLeadEdge = axisMain ? PhysicalEdge.Top : PhysicalEdge.Left;
+    const crossTrailEdge = axisMain ? PhysicalEdge.Bottom : PhysicalEdge.Right;
+    const autoMainLead = isMarginAutoOnEdge(child, mainLeadEdge);
+    const autoMainTrail = isMarginAutoOnEdge(child, mainTrailEdge);
+    const autoCrossLead = isMarginAutoOnEdge(child, crossLeadEdge);
+    const autoCrossTrail = isMarginAutoOnEdge(child, crossTrailEdge);
+    const mMainLead = autoMainLead
+      ? autoMainMarginSize
+      : marginStart(child, axisMain, availableMain);
+    const mMainTrail = autoMainTrail
+      ? autoMainMarginSize
+      : marginEnd(child, axisMain, availableMain);
+    const mCrossLead = autoCrossLead ? 0 : marginStart(child, !axisMain, availableCross);
+    const mCrossTrail = autoCrossTrail ? 0 : marginEnd(child, !axisMain, availableCross);
+
     // Compute cross-axis offset (relative to this node) for alignChild.
-    const crossOffset = alignChild(
+    // Cross auto margins override align-items: both → center, one →
+    // push to the opposite edge.
+    let crossOffset = alignChild(
       child,
       effectiveLineCross,
       Number.isFinite(childCrossSize) ? childCrossSize : 0,
@@ -390,12 +517,22 @@ export function calculateLayoutImpl(
       node.style.alignItems,
       child.style.alignSelf,
     );
+    if (autoCrossLead || autoCrossTrail) {
+      const crossFree = Math.max(0, effectiveLineCross - childCrossSize - mCrossLead - mCrossTrail);
+      if (autoCrossLead && autoCrossTrail) {
+        crossOffset = mCrossLead + crossFree / 2;
+      } else if (autoCrossLead) {
+        crossOffset = mCrossLead + crossFree;
+      }
+      // autoCrossTrail only → crossOffset stays at mCrossLead (child pushes to trailing edge)
+    }
 
     // Set the child's absolute position = parent's position + start-inset
-    // (for padding/border) + offsets.
-    // This is what makes `child._layoutResults.position[0/1]` absolute
-    // (and what getComputedLeft/Top read).
-    const mainOffset = mainCursor;
+    // (padding/border) + leading-margin + offsets.
+    // mainCursor is the pre-margin edge of this child (sibling starts
+    // here), mainOffset = mainCursor + mMainLead is the child's actual
+    // box edge (after its leading margin).
+    const mainOffset = mainCursor + mMainLead;
     const paddingMainStart = paddingBorderStart(node, axisMain, availableMain);
     const paddingCrossStart = paddingBorderStart(node, !axisMain, availableCross);
     const childAbsX = parentOffsetX + paddingCrossStart + (axisMain ? mainOffset : crossOffset);
@@ -427,7 +564,8 @@ export function calculateLayoutImpl(
       child._layoutResults.position[3] = childAbsY + result.height;
       child._hasNewLayout = true;
       child._isDirty = false;
-      mainCursor += child._layoutResults.computedFlexBasis;
+      // Advance cursor past this child's trailing margin + next gap.
+      mainCursor += mMainLead + child._layoutResults.computedFlexBasis + mMainTrail;
       if (i < gaps.length) mainCursor += gaps[i]!;
       continue;
     }
@@ -446,7 +584,7 @@ export function calculateLayoutImpl(
       childAbsY,
     );
 
-    mainCursor += child._layoutResults.computedFlexBasis;
+    mainCursor += mMainLead + child._layoutResults.computedFlexBasis + mMainTrail;
     if (i < gaps.length) mainCursor += gaps[i]!;
   }
 

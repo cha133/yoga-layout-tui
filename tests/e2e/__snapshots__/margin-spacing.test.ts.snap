@@ -1,0 +1,7 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`margin offsets children from parent edges and from each other 1`] = `
+"░BBBB░░░CCCC░░░░░DDD
+░BBBB░░░CCCC░░░░░DDD
+░BBBB░░░CCCC░░░░░DDD"
+`;

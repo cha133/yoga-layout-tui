@@ -21,7 +21,7 @@ shape (so existing call sites drop in with a one-line import change).
 - No `display: contents` (TUI doesn't need it)
 - No `aspect-ratio` (boxes are rectangular anyway)
 - No RTL (`Direction.LTR` only — TUI is always LTR)
-- No margin collapsing, no multi-pass flex resolution
+- No baseline alignment (TUI is fixed-pitch; `alignItems: FlexStart | Center | FlexEnd | Stretch` covers all real cases)
 - No CSS Yoga errata / experimental-feature flags
 
 What it DOES support:
@@ -31,6 +31,7 @@ What it DOES support:
 - 4 `Align` (FlexStart / Center / FlexEnd / Stretch)
 - `flex-grow` / `flex-shrink` / `flex-basis` (Point + Percent + Auto)
 - `width` / `height` / `min-*` / `max-*` (Point + Percent + Auto)
+- `margin` (all 4 sides + `margin: auto`)
 - `padding` (all 4 sides)
 - `position: absolute` (with `top` / `right` / `bottom` / `left`)
 - `display: flex` / `display: none`
