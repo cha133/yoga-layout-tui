@@ -414,7 +414,7 @@ describe('Node.calculateLayout stub', () => {
 
   test('recurse: child layouts also get marked new', () => {
     const root = Node.create();
-    const a = Node.create();
+    const a = Node.create().setWidth(100).setHeight(50);
     root.insertChild(a, 0);
     root.calculateLayout(100, 50);
     expect(a.getHasNewLayout()).toBe(true);

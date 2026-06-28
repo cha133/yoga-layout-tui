@@ -13,17 +13,18 @@
  * trace through. The algorithm runs the same code path every time.
  */
 
+import { calculateLayout as calculateLayoutAlgorithm } from '../algorithm/calculateLayout.js';
 import { Config } from '../config/config.js';
-import {
-  type Align,
-  type Direction,
+import type {
+  Align,
+  Direction,
   Display,
-  type FlexDirection,
-  type Justify,
-  type MeasureMode,
-  type Overflow,
-  type PhysicalEdge,
-  type PositionType,
+  FlexDirection,
+  Justify,
+  MeasureMode,
+  Overflow,
+  PhysicalEdge,
+  PositionType,
 } from '../enums.js';
 import { type DimensionInput, parseDimensionInput } from '../value.js';
 import { LayoutResults } from './layoutResults.js';
@@ -373,58 +374,41 @@ export class Node {
   // ─── Layout (stub — real implementation lands in Phase 4) ───────────
 
   /**
-   * Compute layout for this subtree. Phase 3b ships a no-op that sets
-   * `_hasNewLayout = true` and fills `this.layout` with the input sizes;
-   * Phase 4 replaces this with the real 11-STEP algorithm.
+   * Compute layout for this subtree using the 11-STEP algorithm
+   * (Phase 4 implementation, TUI subset).
    *
-   * The contract that callers depend on (and that Phase 4 must preserve):
+   * Contract:
    *   - Recursively processes children in tree order
    *   - Sets `layout.{width,height}` to the resolved size
    *   - Sets `layout.{left,top,right,bottom}` to the resolved position
    *   - Sets `_hasNewLayout = true`
    *   - Sets `_isDirty = false`
    *   - Skips children with `style.display === Display.None`
+   *   - Lays out absolute children with their own position style
    */
-  calculateLayout(width?: number, height?: number, _direction?: Direction): void {
-    const w = width ?? 0;
-    const h = height ?? 0;
-
-    this._layoutResults.reset();
-    this._layoutResults.measuredDimensions = [w, h];
-    this._hasNewLayout = true;
-    this._isDirty = false;
-
-    // Recurse into visible children.
-    for (const child of this.children) {
-      if (child.style.display === Display.None) continue;
-      child.calculateLayout(w, h);
-    }
-
-    // Update the public view.
-    this.layout.left = 0;
-    this.layout.top = 0;
-    this.layout.right = w;
-    this.layout.bottom = h;
-    this.layout.width = w;
-    this.layout.height = h;
+  calculateLayout(width?: number, height?: number, direction?: Direction): void {
+    const w = width ?? Number.NaN;
+    const h = height ?? Number.NaN;
+    const dir = direction ?? this.style.direction;
+    calculateLayoutAlgorithm(this, w, h, dir);
   }
 
   // ─── Read-side API ───────────────────────────────────────────────────
 
   getComputedLeft(): number {
-    return this.layout.left;
+    return this._layoutResults.position[0];
   }
 
   getComputedTop(): number {
-    return this.layout.top;
+    return this._layoutResults.position[1];
   }
 
   getComputedRight(): number {
-    return this.layout.right;
+    return this._layoutResults.position[2];
   }
 
   getComputedBottom(): number {
-    return this.layout.bottom;
+    return this._layoutResults.position[3];
   }
 
   getComputedWidth(): number {
