@@ -302,15 +302,18 @@ function computeChildCrossSize(
 /**
  * Recursive layout entry.
  *
- * `parentOffsetX` / `parentOffsetY` are the absolute coords of this
- * node's top-left, as placed by its parent. They default to (0, 0)
- * for the root call from `calculateLayout()`. Children inherit
- * their own absolute coords by adding their (main-offset, cross-offset)
- * to the parent's position — see the main loop below.
+ * Positions written to `_layoutResults.position[]` are **local** (relative
+ * to the node's immediate parent). This matches upstream Yoga's behavior
+ * (`YGNodeLayoutGetLeft/Top` returns relative-to-parent). The root call
+ * from `calculateLayout()` has no parent, so the root's local origin is
+ * (0, 0). Each child's local position = parent content-origin + padding/
+ * border start-inset + main/cross offset. The recursion does not pass
+ * absolute coords; consumers that need screen-space positions walk the
+ * parent chain (or accumulate offsets through their render walk, like
+ * Ink does — see `render-node-to-output.ts:435-438`).
  *
- * These params also serve as the per-call reset of `_layoutResults.position`:
- * the parent sets the child's coords BEFORE recursing, so a stale value
- * from the previous call can never survive into the next one.
+ * `_layoutResults.position[]` is reset to (0, 0) at the top of each call
+ * so a stale value from a previous call can never survive.
  */
 export function calculateLayoutImpl(
   node: Node,
@@ -320,8 +323,6 @@ export function calculateLayoutImpl(
   _widthSizingMode: MeasureMode,
   _heightSizingMode: MeasureMode,
   generationCount: number,
-  parentOffsetX: number = 0,
-  parentOffsetY: number = 0,
 ): void {
   // ── Cache-key setup (used by measure-func leaves too) ────────────
   const results = node._layoutResults;
@@ -329,12 +330,15 @@ export function calculateLayoutImpl(
   results.configVersion = node.config.version;
   results.lastOwnerDirection = ownerDirection;
 
-  // Set this node's absolute position from the parent-supplied offset.
+  // NOTE: do NOT reset `results.position[0/1]` here. For the root call,
+  // `calculateLayout()` (the public entry) sets them to (0, 0) before
+  // invoking us. For non-root nodes, the parent's STEP 6c writes the
+  // child's local offset before recursing into us — if we reset to 0
+  // here we'd clobber the parent's just-written value.
+  //
   // The recursive layout-pass cache check (single-slot, lazy) is skipped
   // for simplicity — full Yoga has an 8-slot measure cache, but for
   // TUI trees (small), the generation counter handles invalidation.
-  results.position[0] = parentOffsetX;
-  results.position[1] = parentOffsetY;
 
   // ── Resolve effective flex direction (RTL is identity for TUI) ──
   const effectiveFd = resolveDirection(node.style.flexDirection, ownerDirection);
@@ -559,8 +563,8 @@ export function calculateLayoutImpl(
       // autoCrossTrail only → crossOffset stays at mCrossLead (child pushes to trailing edge)
     }
 
-    // Set the child's absolute position = parent's position + start-inset
-    // (padding/border) + leading-margin + offsets.
+    // Set the child's local position (relative to its parent) = parent
+    // content-origin + start-inset (padding/border) + leading-margin + offset.
     // mainCursor is the pre-margin edge of this child (sibling starts
     // here), mainOffset = mainCursor + mMainLead is the child's actual
     // box edge (after its leading margin).
@@ -572,10 +576,12 @@ export function calculateLayoutImpl(
     // inset (cross when row, main when column). Both axes add the
     // axis-specific offset (mainOffset is the X-axis offset when
     // flexDirection is row, crossOffset is the Y-axis offset).
-    const childAbsX = parentOffsetX + (axisMain ? paddingMainStart : paddingCrossStart) + (axisMain ? mainOffset : crossOffset);
-    const childAbsY = parentOffsetY + (axisMain ? paddingCrossStart : paddingMainStart) + (axisMain ? crossOffset : mainOffset);
-    child._layoutResults.position[0] = childAbsX;
-    child._layoutResults.position[1] = childAbsY;
+    const childX =
+      (axisMain ? paddingMainStart : paddingCrossStart) + (axisMain ? mainOffset : crossOffset);
+    const childY =
+      (axisMain ? paddingCrossStart : paddingMainStart) + (axisMain ? crossOffset : mainOffset);
+    child._layoutResults.position[0] = childX;
+    child._layoutResults.position[1] = childY;
 
     // Measure-func leaf — ask for intrinsic size, no recursion.
     if (child.measureFunc) {
@@ -591,14 +597,14 @@ export function calculateLayoutImpl(
       } else {
         child._layoutResults.computedFlexBasis = result.height;
       }
-      child.layout.left = childAbsX;
-      child.layout.top = childAbsY;
+      child.layout.left = childX;
+      child.layout.top = childY;
       child.layout.width = result.width;
       child.layout.height = result.height;
-      child.layout.right = childAbsX + result.width;
-      child.layout.bottom = childAbsY + result.height;
-      child._layoutResults.position[2] = childAbsX + result.width;
-      child._layoutResults.position[3] = childAbsY + result.height;
+      child.layout.right = childX + result.width;
+      child.layout.bottom = childY + result.height;
+      child._layoutResults.position[2] = childX + result.width;
+      child._layoutResults.position[3] = childY + result.height;
       child._hasNewLayout = true;
       child._isDirty = false;
       // Advance cursor past this child's trailing margin + next gap.
@@ -617,8 +623,6 @@ export function calculateLayoutImpl(
       MeasureMode.Exactly,
       MeasureMode.Exactly,
       generationCount,
-      childAbsX,
-      childAbsY,
     );
 
     mainCursor += mMainLead + child._layoutResults.computedFlexBasis + mMainTrail;
@@ -642,9 +646,8 @@ export function calculateLayoutImpl(
   // 0 height and hid their descendants. The previous code used
   // `Number.isFinite(availableInnerMain) ? availableInnerMain : ...`
   // which accepted 0 as "finite" and left content containers empty.
-  const ownMainBound = availableInnerMain > 0
-    ? availableInnerMain + paddingMain
-    : lineMainSize + paddingMain;
+  const ownMainBound =
+    availableInnerMain > 0 ? availableInnerMain + paddingMain : lineMainSize + paddingMain;
   const ownCrossBound = effectiveLineCross + paddingCross;
 
   let ownW: number;

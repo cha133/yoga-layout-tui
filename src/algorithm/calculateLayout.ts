@@ -37,6 +37,13 @@ export function calculateLayout(
     ? MeasureMode.Exactly
     : MeasureMode.Undefined;
 
+  // Root has no parent, so its local origin is (0, 0). The recursion
+  // entry (`calculateLayoutImpl`) does NOT reset `position[0/1]` —
+  // non-root children inherit their local offset from the parent's
+  // STEP 6c write, which would be clobbered by a top-of-recursion reset.
+  node._layoutResults.position[0] = 0;
+  node._layoutResults.position[1] = 0;
+
   calculateLayoutImpl(
     node,
     availableWidth,

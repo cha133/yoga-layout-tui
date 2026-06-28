@@ -18,6 +18,13 @@
  *      outside any child's bounds (e.g., margin areas around a child
  *      that doesn't fill its parent's space).
  *
+ * Positions accumulate through stack frames: yoga-layout-tui's
+ * `getComputedLeft/Top` returns coordinates RELATIVE to the immediate
+ * parent (matches upstream Yoga C++ and Yoga WASM). We add the parent's
+ * accumulated origin to each child's local offset to get screen-space
+ * coords for painting. Same pattern as Ink's
+ * `render-node-to-output.ts:435-438` (`offsetX + yogaNode.getComputedLeft()`).
+ *
  * The output is a single string with `\n`-separated rows. bun:test's
  * `toMatchSnapshot()` handles this cleanly.
  *
@@ -34,6 +41,10 @@ interface StackFrame {
   node: Node;
   charIndex: number;
   depth: number;
+  // Accumulated absolute origin of this node's top-left corner in
+  // screen coords. Computed as parent origin + node.getComputedLeft/Top().
+  absX: number;
+  absY: number;
 }
 
 export function renderToGrid(root: Node, gridWidth: number, gridHeight: number): string {
@@ -48,16 +59,15 @@ export function renderToGrid(root: Node, gridWidth: number, gridHeight: number):
     Array.from({ length: gridWidth }, () => EMPTY_CHAR),
   );
 
-  // Depth-first via stack. We seed with the root at charIndex 0 /
-  // depth -1 so children get depth 0, and depth 0 (the root's direct
-  // children) is the only level we treat as "skip painting" — see
-  // the loop below for why.
-  const stack: StackFrame[] = [{ node: root, charIndex: 0, depth: -1 }];
+  // Depth-first via stack. Root sits at (0, 0) — it has no parent so
+  // its local left/top = 0 is also its absolute origin. Children
+  // accumulate their parent's absX/absY + their local left/top.
+  const stack: StackFrame[] = [{ node: root, charIndex: 0, depth: -1, absX: 0, absY: 0 }];
 
   while (stack.length > 0) {
     const frame = stack.pop();
     if (frame === undefined) break;
-    const { node, charIndex, depth } = frame;
+    const { node, charIndex, depth, absX, absY } = frame;
     const char = NODE_CHARS[charIndex % NODE_CHARS.length] ?? EMPTY_CHAR;
     const layout = node.getComputedLayout();
 
@@ -73,10 +83,10 @@ export function renderToGrid(root: Node, gridWidth: number, gridHeight: number):
     // fully covers the layout's extent — never leaves a gap when the
     // algorithm intended to fill 3.846 → 6.846.
     if (depth >= 0) {
-      const xStart = Math.max(0, Math.floor(layout.left));
-      const xEnd = Math.min(gridWidth, Math.ceil(layout.left + layout.width));
-      const yStart = Math.max(0, Math.floor(layout.top));
-      const yEnd = Math.min(gridHeight, Math.ceil(layout.top + layout.height));
+      const xStart = Math.max(0, Math.floor(absX + layout.left));
+      const xEnd = Math.min(gridWidth, Math.ceil(absX + layout.left + layout.width));
+      const yStart = Math.max(0, Math.floor(absY + layout.top));
+      const yEnd = Math.min(gridHeight, Math.ceil(absY + layout.top + layout.height));
       for (let y = yStart; y < yEnd; y++) {
         const row = grid[y];
         if (row === undefined) continue;
@@ -92,6 +102,13 @@ export function renderToGrid(root: Node, gridWidth: number, gridHeight: number):
     //
     // Each child gets charIndex + 1 + i — this skips a slot so a
     // grandchild can't reuse the same char as its parent's sibling.
+    //
+    // Child absolute origin = this frame's absX/absY + this node's
+    // local left/top (= parent's local-position contribution to the
+    // child). The child's own getComputedLeft/Top is its local offset,
+    // so we add that to its origin in the next frame's paint loop.
+    const childOriginX = absX + layout.left;
+    const childOriginY = absY + layout.top;
     for (let i = node.children.length - 1; i >= 0; i--) {
       const child = node.children[i];
       if (child === undefined) continue;
@@ -99,6 +116,8 @@ export function renderToGrid(root: Node, gridWidth: number, gridHeight: number):
         node: child,
         charIndex: charIndex + 1 + i,
         depth: depth + 1,
+        absX: childOriginX,
+        absY: childOriginY,
       });
     }
   }

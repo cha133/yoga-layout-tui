@@ -91,9 +91,7 @@ describe('hot-patch #2: lineMainSize accumulator + STEP 9 fallback', () => {
 
   test('row container without explicit width uses lineMainSize sum', () => {
     // Symmetric case: row root, no width, two children with widths 3 and 4.
-    const root = Node.create()
-      .setHeight(10)
-      .setFlexDirection(FlexDirection.Row); // no setWidth
+    const root = Node.create().setHeight(10).setFlexDirection(FlexDirection.Row); // no setWidth
     const a = Node.create().setWidth(3).setHeight(10);
     const b = Node.create().setWidth(4).setHeight(10);
     root.insertChild(a, 0);
@@ -133,10 +131,7 @@ describe('hot-patch #3: STEP 9 fallback `> 0` (treats literal 0 like NaN)', () =
 
   test('row container with width=0 still gives flex children visible space', () => {
     // Symmetric: row root with explicit width=0.
-    const root = Node.create()
-      .setWidth(0)
-      .setHeight(10)
-      .setFlexDirection(FlexDirection.Row);
+    const root = Node.create().setWidth(0).setHeight(10).setFlexDirection(FlexDirection.Row);
     const child = Node.create().setWidth(4).setHeight(10);
     root.insertChild(child, 0);
     root.calculateLayout(0, 10);
